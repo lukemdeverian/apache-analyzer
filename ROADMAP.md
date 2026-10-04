@@ -20,7 +20,7 @@ continue with the next increment when the user asks to proceed.
 | # | Deliverable | Suggested commit message | Status |
 | --- | --- | --- | --- |
 | 1 | Runnable application, local configuration, health endpoint, setup instructions | `chore: scaffold local Apache analyzer application` | Complete |
-| 2 | Apache access/error parsers, normalized event records, raw evidence, parser fixtures | `feat: parse Apache access and error logs` | Planned |
+| 2 | Apache access/error parsers, normalized event records, raw evidence, parser fixtures | `feat: parse Apache access and error logs` | Complete |
 | 3 | SQLite event and alert storage, schema initialization, query helpers | `feat: persist Apache events and alerts in SQLite` | Planned |
 | 4 | Streaming file ingestion CLI, explicit format selection, provenance, import summary | `feat: ingest Apache log files from the command line` | Planned |
 | 5 | Behavioral rules for path enumeration, repeated HTTP errors, authentication failures, request bursts | `feat: detect suspicious Apache request patterns` | Planned |

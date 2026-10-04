@@ -1,0 +1,3 @@
+[Tue Oct 06 09:01:02.123456 2026] [authz_core:error] [pid 4120:tid 8801] [client 192.0.2.20:52102] AH01630: client denied by server configuration: /srv/www/private
+[Tue Oct 06 09:02:03.000004 2026] [core:notice] [pid 4120] AH00094: Command line: '/usr/sbin/httpd'
+[Tue Oct 06 09:03:04.654321 2026] [core:error] [pid 4120:tid 0x1a2b] [client [2001:db8::20]:44321] AH00126: Invalid URI in request GET /bad%20path
