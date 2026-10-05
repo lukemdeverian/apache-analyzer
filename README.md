@@ -10,7 +10,7 @@ Flask dashboard. It runs directly on Python without Docker or a database server.
 The initial implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Current progress: increment 3 of 10
+## Current progress: increment 4 of 10
 
 Implemented:
 
@@ -24,11 +24,14 @@ Implemented:
 - SQLite event and alert storage with versioned schema initialization.
 - Atomic alert/evidence writes, foreign-key protection, and indexed query helpers.
 - Persistence, filtering, transaction rollback, and database CLI tests.
+- Streaming Apache file ingestion with an explicit access/error format selection.
+- Human-readable and JSON import summaries, bounded line reads, and rejection counts.
+- Atomic file imports with file/line provenance and optional error-log UTC offsets.
 
-File ingestion, automatic detection, APIs, and the dashboard are planned in
-subsequent increments. Parsing and storage are available through Python;
-the `init-db` command creates the local database. The only HTTP route currently
-available is `GET /health`, which works without opening a database.
+File ingestion is available through the CLI. Automatic detection, APIs, and the
+dashboard are planned in subsequent increments. Parsing and storage are also
+available through Python. The only HTTP route currently available is
+`GET /health`, which works without opening a database.
 
 ## Run locally
 
@@ -79,6 +82,59 @@ Debug values accept `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`,
 case-insensitively. Invalid settings stop startup with a named validation error.
 The intended runtime is a local development application; authentication and
 remote deployment are outside the current scope.
+
+## Import Apache log files
+
+Initialize the database once with `init-db`, then choose the log type explicitly.
+You can try the committed synthetic fixtures:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app ingest .\tests\fixtures\access_combined.txt --format access
+.\.venv\Scripts\python.exe -m flask --app app ingest .\tests\fixtures\error_standard.txt --format error --error-timezone=-07:00 --json
+```
+
+Replace the fixture path with your Apache log file. File extensions do not affect
+parser selection. Common/combined access records use `--format access`; standard
+and legacy error records use `--format error`. Files are read as UTF-8 text, with
+LF or CRLF line endings, an optional initial UTF-8 signature, and an optional
+unterminated final line. The importer reads regular files and preserves their
+contents. Each stored event includes the resolved source path, its physical line
+number, and raw evidence. The initial UTF-8 signature is retained in raw evidence.
+
+`--error-timezone` accepts `UTC` (the default) or a signed offset such as `-07:00`
+or `+05:30`. It applies that fixed offset to every error timestamp in the file.
+Access timestamps use their own logged offsets. The chosen error timezone is
+included in both the summary and stored records.
+
+Each record is limited to 65536 bytes by default, excluding its line ending.
+Change this with `--max-line-bytes`, from 1 through 1048576. Oversized lines are
+drained through bounded reads and counted once; the remaining file continues to
+be processed. Memory usage does not grow with the number of imported records.
+
+The successful summary reports:
+
+| Field | Meaning |
+| --- | --- |
+| `lines_read` | Physical lines encountered, including blanks and rejected records |
+| `imported_events` | Records saved by this import |
+| `blank_lines` | Empty or whitespace-only lines skipped |
+| `malformed_lines` | Lines that do not match the selected Apache layout |
+| `encoding_error_lines` | Lines that cannot be decoded as UTF-8 |
+| `oversized_lines` | Lines larger than the chosen byte limit |
+| `invalid_value_lines` | Parsed values that cannot be represented in storage, such as oversized integers |
+| `rejected_lines` | Total malformed, encoding-error, oversized, and invalid-value lines |
+
+Add `--json` to print the successful summary as JSON. It also contains
+`source_file`, `log_type`, and `assumed_timezone`. Blank and rejected lines are
+skipped; an import must contain at least one usable Apache record to succeed.
+An empty file, a wrong format choice, or unrelated log content produces a
+nonzero exit code with a rejection summary.
+
+Each file is saved in a single transaction. A file-read or database failure
+rolls back all events from that import and reports a nonzero exit code. Earlier
+imports remain intact. Repeating a successful import appends new events.
+Collection is batch-oriented: the importer reads to EOF and does not follow
+log rotation. Automatic alert detection is added in later increments.
 
 ## Local storage
 

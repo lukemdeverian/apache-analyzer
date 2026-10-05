@@ -5,6 +5,7 @@ from typing import Any
 
 from flask import Flask
 
+from app.cli import init_app as init_cli_app
 from app.config import Settings
 from app.database import init_app as init_database_app
 
@@ -16,6 +17,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     app.config.from_mapping(settings.as_flask_config())
     app.config.update(config_overrides or {})
     init_database_app(app)
+    init_cli_app(app)
 
     @app.get("/health")
     def health() -> dict[str, str]:
