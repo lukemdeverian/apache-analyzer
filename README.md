@@ -10,7 +10,7 @@ Flask dashboard. It runs directly on Python without Docker or a database server.
 The initial implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Current progress: increment 5 of 10
+## Current progress: increment 6 of 10
 
 Implemented:
 
@@ -30,8 +30,11 @@ Implemented:
 - Four behavioral detection rules with configurable thresholds and rolling time windows.
 - Read-only findings containing rule details, logged IP, timestamps, and full evidence IDs.
 - Detection checks for thresholds, boundary times, benign traffic, and out-of-order imports.
+- Five request signatures for traversal, SQL injection, XSS, sensitive files, and unusual methods.
+- Server-wide windows for HTTP 5xx responses and severe Apache error-log records.
+- Bounded inspection decoding, preserved original evidence, and configurable expected HTTP methods.
 
-File ingestion is available through the CLI; behavioral detection is available
+File ingestion is available through the CLI; detection is available
 through Python. Automatic alert saving and correlation, APIs, and the dashboard
 are planned in subsequent increments. The only HTTP route currently available is
 `GET /health`, which works without opening a database.
@@ -205,10 +208,11 @@ at least one existing event and deduplicates its evidence IDs. Invalid evidence
 links roll back the entire alert creation, including when it runs inside a larger
 transaction. There is no automatic detection or alert correlation yet.
 
-## Behavioral detections
+## Apache detections
 
-The detector scans stored Apache access records and returns findings for these
-four patterns. Each threshold applies to one logged IP in a rolling window:
+The detector scans stored Apache access and error records and returns findings
+for eleven rule types. These four behavioral thresholds apply to one logged IP
+in a rolling window:
 
 | Rule ID | Condition | Default threshold / window | Severity |
 | --- | --- | --- | --- |
@@ -222,7 +226,7 @@ excluding its query string. Percent encoding and case remain significant. A
 missing path or a non-path target such as `OPTIONS *` does not qualify for the
 path-enumeration or authentication rule. Records with a missing request still
 count toward repeated 403/404 errors and volume. IP-based rules skip records
-where only a hostname is logged. Error-log detections are added in increment 6.
+where only a hostname is logged.
 
 HTTP 401 indicates missing valid authentication credentials and can include an
 initial authentication challenge; HTTP 403 indicates refusal of the request.
@@ -231,6 +235,62 @@ The authentication rule therefore counts 401 responses. Login outcomes represent
 by 200/302 responses cannot be inferred from these access logs. Busy legitimate
 clients, shared proxy addresses, and broken links can also produce these patterns;
 findings identify evidence to review rather than establish an attack.
+
+Seven additional rules inspect individual requests or server-wide bursts:
+
+| Rule ID | Condition | Default threshold / window | Severity |
+| --- | --- | --- | --- |
+| `APACHE-TRAVERSAL` | Parent-directory segments in a path or query, including Windows separators | One matching request | High |
+| `APACHE-SQL-INJECTION` | Selected SQL syntax signatures in a path or query | One matching request | High |
+| `APACHE-XSS` | Script tags, HTML event-handler attributes, or JavaScript URIs in a path or query | One matching request | High |
+| `APACHE-SENSITIVE-FILE` | Configuration, credential, repository, database, or backup paths | One matching request | Medium |
+| `APACHE-UNUSUAL-METHOD` | A method outside the configured expected set | One matching request | Medium |
+| `APACHE-SERVER-ERRORS` | HTTP 500-599 access responses across clients | 20 responses / 60 seconds | High |
+| `APACHE-ERROR-BURST` | Apache `error`, `crit`, `alert`, or `emerg` records across modules and clients | 10 records / 60 seconds | High |
+
+Request signatures inspect the original path/query and up to two percent-decoding
+passes. Literal `+` becomes a space in the first query-decoding pass; it remains
+literal in paths and when produced by percent decoding. XSS inspection also
+decodes bounded HTML entity references; oversized numeric references remain
+unchanged. Inspection never changes the stored target, path, query, or raw log.
+Signatures are checked regardless of response status, and a 200 response alone
+does not prove successful exploitation. Request signatures can also inspect
+records with a hostname or no logged IP.
+
+SQL signatures cover `UNION [ALL] SELECT`, including simple comment separators;
+numeric or quoted-literal `AND`/`OR` comparisons; `sleep`, `pg_sleep`, and
+`benchmark` calls with a numeric argument; and selected semicolon-prefixed
+statements such as `DROP TABLE`, `INSERT INTO`, `DELETE FROM`, and `UPDATE ... SET`.
+A quote or the word `select` alone does not trigger the rule. The signature
+examples draw on OWASP's [traversal tests](https://github.com/OWASP/wstg/blob/v4.2/document/4-Web_Application_Security_Testing/05-Authorization_Testing/01-Testing_Directory_Traversal_File_Include.md),
+[SQL injection tests](https://github.com/OWASP/wstg/blob/v4.2/document/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection.md),
+and [XSS tests](https://github.com/OWASP/wstg/blob/v4.2/document/4-Web_Application_Security_Testing/07-Input_Validation_Testing/01-Testing_for_Reflected_Cross_Site_Scripting.md).
+These are selected heuristics rather than an exhaustive signature set.
+
+Sensitive-file matching uses path components rather than query mentions. It
+checks `.git`, `.svn`, and `.hg` directories; `.env` and `.env.*`; `.htaccess`,
+`.htpasswd`, `wp-config.php`, `config.php`, `web.config`, `id_rsa`, and `id_ed25519`;
+and filenames ending in `.sql`, `.sqlite`, `.sqlite3`, `.db`, `.bak`, `.old`,
+`.orig`, `.swp`, or `~`. Filename comparisons ignore case. Legitimate public
+downloads or tutorial requests can match these signatures.
+
+Expected methods default to `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`, and
+`OPTIONS`. Method names are case-sensitive. `TRACE`, `CONNECT`, WebDAV methods,
+and custom tokens therefore produce review findings by default; configure
+`allowed_methods` for servers that intentionally use them.
+
+Server burst rules combine evidence from all imported files in this database,
+including records without a client IP. Their findings use `source_ip=None` and
+a server grouping key. The error-log rule uses parsed severity rather than words
+in the message; `warn`, `notice`, `info`, `debug`, and trace levels do not count.
+Severity meanings follow the [Apache LogLevel documentation](https://httpd.apache.org/docs/2.4/mod/core.html#loglevel).
+These bursts can indicate operational failures as well as suspicious activity.
+
+Only logged paths, queries, methods, statuses, and error levels are available.
+Request bodies, cookies, and response content are outside the supported layouts.
+Referrers, user agents, and error messages are not scanned as request targets.
+Encoding deeper than two percent-decoding passes and application-specific
+obfuscation can evade the request signatures.
 
 After importing logs, run the detector from Python:
 
@@ -253,16 +313,19 @@ the rule ID, title, severity, description, grouping key, source IP, first/last
 matching timestamps, threshold/window, distinct-path count, anchor event ID, and
 every matching event ID. Retrieve raw evidence and provenance with
 `store.get_event(event_id)`. Scanning does not create or update stored alerts.
+Single-request findings contain one event ID, `threshold=1`, and
+`window_seconds=None`.
 
 Records are processed by UTC timestamp, with database ID breaking ties. Both
 window boundaries are inclusive. Findings use matching records through the
-current anchor and exclude later records. At and above the threshold, every
-new qualifying record emits a finding; overlapping findings will be correlated
+current anchor and exclude later records. For window rules, every new qualifying
+record at or above the threshold emits a finding. Overlapping findings will be correlated
 and saved in increment 7. Different rule types can describe the same evidence.
 
 `iter_findings(store, start=..., end=..., source_ip=...)` filters emitted anchors.
 Time filters require timezone-aware datetimes. A start filter loads earlier
 context for the longest configured window so it does not lose relevant evidence.
+An IP filter excludes server-wide findings, which have no single source IP.
 The scan streams all matching events, retaining active windows instead of loading
 the entire database. Keep the connection open and consume or close the iterator.
 Evidence is not truncated by the storage list helpers' 1000-record limit.
@@ -275,13 +338,25 @@ from app.detection import DetectionEngine, RuleSettings
 engine = DetectionEngine({
     "APACHE-PATH-ENUMERATION": RuleSettings(threshold=8, window_seconds=120, min_distinct_paths=4),
     "APACHE-AUTH-FAILURES": RuleSettings(threshold=6, window_seconds=180),
+    "APACHE-ERROR-BURST": RuleSettings(threshold=15, window_seconds=120),
 })
 ```
 
-Thresholds must be positive integers. Windows accept 1 through 86400 seconds.
+Window thresholds must be positive integers. Windows accept 1 through 86400 seconds.
 Only path enumeration accepts a distinct-path setting above 1, and that setting
-cannot exceed its request threshold. Unknown rule IDs and invalid settings raise
-`ValueError`. Overrides affect that engine instance without changing defaults.
+cannot exceed its request threshold. Single-request signatures have no threshold
+overrides; their catalog entries have `settings=None`. Unknown window rule IDs
+and invalid settings raise `ValueError`. Overrides affect that engine instance
+without changing defaults. Configure expected methods separately:
+
+```python
+from app.detection import DetectionEngine
+from app.signatures import DEFAULT_ALLOWED_METHODS
+
+engine = DetectionEngine(allowed_methods=DEFAULT_ALLOWED_METHODS | {"PROPFIND", "REPORT"})
+```
+
+The method collection must contain valid, nonempty HTTP method tokens.
 The detector groups across imported files in the same database, so use logs from
 the same server context. Reimporting a file adds duplicate evidence that also
 counts toward detection thresholds.

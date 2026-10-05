@@ -128,9 +128,10 @@ def test_error_log_records_do_not_contribute_to_access_rules(store):
     assert error is not None
     for _ in range(120):
         store.insert_event(error)
-    assert findings(store) == []
+    assert findings(store, AUTH) == []
+    assert findings(store, BURST) == []
     anchor = store.insert_event(make_event(2, status=401, target="/private"))
-    result, = findings(store)
+    result, = findings(store, AUTH)
     assert result.rule_id == AUTH
     assert result.event_ids == tuple([*ids, anchor])
 
