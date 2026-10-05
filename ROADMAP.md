@@ -23,7 +23,7 @@ continue with the next increment when the user asks to proceed.
 | 2 | Apache access/error parsers, normalized event records, raw evidence, parser fixtures | `feat: parse Apache access and error logs` | Complete |
 | 3 | SQLite event and alert storage, schema initialization, query helpers | `feat: persist Apache events and alerts in SQLite` | Complete |
 | 4 | Streaming file ingestion CLI, explicit format selection, provenance, import summary | `feat: ingest Apache log files from the command line` | Complete |
-| 5 | Behavioral rules for path enumeration, repeated HTTP errors, authentication failures, request bursts | `feat: detect suspicious Apache request patterns` | Planned |
+| 5 | Behavioral rules for path enumeration, repeated HTTP errors, authentication failures, request bursts | `feat: detect suspicious Apache request patterns` | Complete |
 | 6 | Additional alerts for traversal, SQL injection and XSS probes, sensitive files, unusual methods, server/error-log bursts | `feat: expand Apache security and server error detections` | Planned |
 | 7 | Detection pipeline integration, alert correlation, evidence linking, analyst statuses | `feat: correlate Apache detections and manage alert status` | Planned |
 | 8 | Paginated APIs for events, alerts, evidence, rules, statistics, and status updates | `feat: expose Apache investigation APIs` | Planned |

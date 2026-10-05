@@ -1,7 +1,7 @@
 """Typed SQLite writes and bounded, parameterized evidence queries."""
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from typing import Any
@@ -153,6 +153,25 @@ class SQLiteStore:
     ) -> int:
         where, parameters = _event_filters(source_ip, log_type, start, end)
         return self.connection.execute(f"SELECT COUNT(*) FROM events{where}", parameters).fetchone()[0]
+
+    def iter_events(
+        self, *, source_ip: str | None = None, log_type: ApacheLogType | None = None,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> Iterator[StoredEvent]:
+        """Stream all matching evidence in timestamp/ID order, without a page cap.
+
+        Keep the connection open while iterating. Close the iterator if stopping
+        early; exhausting it also closes its cursor. This read does not commit.
+        """
+        where, parameters = _event_filters(source_ip, log_type, start, end)
+        cursor = self.connection.execute(
+            f"SELECT * FROM events{where} ORDER BY timestamp, id", parameters,
+        )
+        try:
+            for row in cursor:
+                yield _stored_event(row)
+        finally:
+            cursor.close()
 
     def insert_alert(self, alert: Alert, event_ids: Iterable[int]) -> int:
         evidence_ids = tuple(event_ids)

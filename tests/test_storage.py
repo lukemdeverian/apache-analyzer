@@ -106,6 +106,35 @@ def test_event_pagination_is_stable_for_equal_timestamps(store):
     assert store.count_events() == 3
 
 
+def test_event_iterator_streams_beyond_page_limit_in_timestamp_id_order(store):
+    with transaction(store.connection):
+        ids = [store.insert_event(make_event(index % 3)) for index in range(1201)]
+    results = list(store.iter_events())
+    assert len(results) == 1201
+    assert [item.id for item in results] == sorted(ids, key=lambda event_id: ((event_id - ids[0]) % 3, event_id))
+
+
+def test_event_iterator_uses_inclusive_utc_and_source_filters(store):
+    store.insert_event(make_event())
+    middle = store.insert_event(make_event(1))
+    store.insert_event(make_event(2))
+    store.insert_event(make_event(1, source_ip="192.0.2.20"))
+    timestamp = (BASE + timedelta(seconds=1)).astimezone(timezone(timedelta(hours=5, minutes=30)))
+    assert [item.id for item in store.iter_events(
+        start=timestamp, end=timestamp, source_ip="192.0.2.10", log_type="access",
+    )] == [middle]
+    assert list(store.iter_events(log_type="error")) == []
+
+
+@pytest.mark.parametrize("filters", [
+    {"log_type": "ssh"}, {"start": BASE.replace(tzinfo=None)},
+    {"start": BASE + timedelta(seconds=1), "end": BASE},
+])
+def test_event_iterator_rejects_invalid_filters(store, filters):
+    with pytest.raises(ValueError):
+        list(store.iter_events(**filters))
+
+
 def test_missing_records_return_none_or_empty_evidence(store):
     assert store.get_event(1234) is None
     assert store.get_alert(1234) is None

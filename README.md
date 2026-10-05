@@ -10,7 +10,7 @@ Flask dashboard. It runs directly on Python without Docker or a database server.
 The initial implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Current progress: increment 4 of 10
+## Current progress: increment 5 of 10
 
 Implemented:
 
@@ -27,10 +27,13 @@ Implemented:
 - Streaming Apache file ingestion with an explicit access/error format selection.
 - Human-readable and JSON import summaries, bounded line reads, and rejection counts.
 - Atomic file imports with file/line provenance and optional error-log UTC offsets.
+- Four behavioral detection rules with configurable thresholds and rolling time windows.
+- Read-only findings containing rule details, logged IP, timestamps, and full evidence IDs.
+- Detection checks for thresholds, boundary times, benign traffic, and out-of-order imports.
 
-File ingestion is available through the CLI. Automatic detection, APIs, and the
-dashboard are planned in subsequent increments. Parsing and storage are also
-available through Python. The only HTTP route currently available is
+File ingestion is available through the CLI; behavioral detection is available
+through Python. Automatic alert saving and correlation, APIs, and the dashboard
+are planned in subsequent increments. The only HTTP route currently available is
 `GET /health`, which works without opening a database.
 
 ## Run locally
@@ -161,6 +164,7 @@ in-memory storage.
 | --- | --- |
 | `insert_event(event)` / `get_event(id)` | Save and retrieve every normalized field plus raw evidence |
 | `list_events(...)` / `count_events(...)` | Filter by source IP, log type, and inclusive timestamp range |
+| `iter_events(...)` | Stream all events matching those filters in timestamp/ID order without a page limit |
 | `insert_alert(alert, event_ids)` / `get_alert(id)` | Atomically save an alert and links to existing evidence |
 | `list_alerts(...)` / `count_alerts(...)` | Filter by source IP, rule, severity, status, and inclusive first-seen range |
 | `get_alert_events(id, ...)` | Retrieve linked evidence in timestamp/ID order |
@@ -200,6 +204,87 @@ commit a batch together or roll it back on an exception. Alert creation requires
 at least one existing event and deduplicates its evidence IDs. Invalid evidence
 links roll back the entire alert creation, including when it runs inside a larger
 transaction. There is no automatic detection or alert correlation yet.
+
+## Behavioral detections
+
+The detector scans stored Apache access records and returns findings for these
+four patterns. Each threshold applies to one logged IP in a rolling window:
+
+| Rule ID | Condition | Default threshold / window | Severity |
+| --- | --- | --- | --- |
+| `APACHE-PATH-ENUMERATION` | HTTP 403/404 responses across at least 5 distinct paths | 10 responses / 300 seconds | Medium |
+| `APACHE-HTTP-ERRORS` | HTTP 403/404 responses, including repeats of one path | 20 responses / 300 seconds | Medium |
+| `APACHE-AUTH-FAILURES` | HTTP 401 responses to the same path | 10 responses / 300 seconds | High |
+| `APACHE-REQUEST-BURST` | Access records regardless of response status | 120 records / 60 seconds | Medium |
+
+Distinct paths and authentication grouping use the parsed path exactly as logged,
+excluding its query string. Percent encoding and case remain significant. A
+missing path or a non-path target such as `OPTIONS *` does not qualify for the
+path-enumeration or authentication rule. Records with a missing request still
+count toward repeated 403/404 errors and volume. IP-based rules skip records
+where only a hostname is logged. Error-log detections are added in increment 6.
+
+HTTP 401 indicates missing valid authentication credentials and can include an
+initial authentication challenge; HTTP 403 indicates refusal of the request.
+These meanings follow [HTTP Semantics, RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.5.2).
+The authentication rule therefore counts 401 responses. Login outcomes represented
+by 200/302 responses cannot be inferred from these access logs. Busy legitimate
+clients, shared proxy addresses, and broken links can also produce these patterns;
+findings identify evidence to review rather than establish an attack.
+
+After importing logs, run the detector from Python:
+
+```python
+from app import create_app
+from app.database import get_database
+from app.detection import DetectionEngine
+from app.storage import SQLiteStore
+
+app = create_app()
+with app.app_context():
+    store = SQLiteStore(get_database())
+    for finding in DetectionEngine().iter_findings(store):
+        print(finding.rule_id, finding.source_ip, finding.event_count)
+        print(finding.description, finding.event_ids)
+```
+
+The configured database must already be initialized. A `DetectionFinding` includes
+the rule ID, title, severity, description, grouping key, source IP, first/last
+matching timestamps, threshold/window, distinct-path count, anchor event ID, and
+every matching event ID. Retrieve raw evidence and provenance with
+`store.get_event(event_id)`. Scanning does not create or update stored alerts.
+
+Records are processed by UTC timestamp, with database ID breaking ties. Both
+window boundaries are inclusive. Findings use matching records through the
+current anchor and exclude later records. At and above the threshold, every
+new qualifying record emits a finding; overlapping findings will be correlated
+and saved in increment 7. Different rule types can describe the same evidence.
+
+`iter_findings(store, start=..., end=..., source_ip=...)` filters emitted anchors.
+Time filters require timezone-aware datetimes. A start filter loads earlier
+context for the longest configured window so it does not lose relevant evidence.
+The scan streams all matching events, retaining active windows instead of loading
+the entire database. Keep the connection open and consume or close the iterator.
+Evidence is not truncated by the storage list helpers' 1000-record limit.
+
+Override thresholds through Python; `engine.rules` exposes the active catalog:
+
+```python
+from app.detection import DetectionEngine, RuleSettings
+
+engine = DetectionEngine({
+    "APACHE-PATH-ENUMERATION": RuleSettings(threshold=8, window_seconds=120, min_distinct_paths=4),
+    "APACHE-AUTH-FAILURES": RuleSettings(threshold=6, window_seconds=180),
+})
+```
+
+Thresholds must be positive integers. Windows accept 1 through 86400 seconds.
+Only path enumeration accepts a distinct-path setting above 1, and that setting
+cannot exceed its request threshold. Unknown rule IDs and invalid settings raise
+`ValueError`. Overrides affect that engine instance without changing defaults.
+The detector groups across imported files in the same database, so use logs from
+the same server context. Reimporting a file adds duplicate evidence that also
+counts toward detection thresholds.
 
 ## Parse an Apache record
 
