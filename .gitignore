@@ -13,6 +13,7 @@ htmlcov/
 !.env.example
 instance/
 *.sqlite
+*.sqlite-*
 *.sqlite3
 *.sqlite3-*
 *.db

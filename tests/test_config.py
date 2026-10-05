@@ -57,3 +57,11 @@ def test_empty_settings_fail_at_startup(monkeypatch, tmp_path, name):
 
     with pytest.raises(ValueError, match=name):
         Settings.from_environment(tmp_path)
+
+
+@pytest.mark.parametrize("value", ["postgresql://localhost/events", "file:events.sqlite3", ":memory:"])
+def test_database_environment_requires_a_local_file_path(monkeypatch, tmp_path, value):
+    monkeypatch.setenv("DATABASE_PATH", value)
+
+    with pytest.raises(ValueError, match="DATABASE_PATH"):
+        Settings.from_environment(tmp_path)

@@ -39,6 +39,8 @@ class Settings:
         database_value = os.environ.get("DATABASE_PATH", "apache_analyzer.sqlite3").strip()
         if not database_value:
             raise ValueError("DATABASE_PATH must not be empty.")
+        if "://" in database_value or database_value.startswith("file:") or database_value == ":memory:":
+            raise ValueError("DATABASE_PATH must be a local file path.")
         database_path = Path(database_value).expanduser()
         if not database_path.is_absolute():
             database_path = Path(instance_path) / database_path
