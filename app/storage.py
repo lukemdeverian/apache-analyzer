@@ -3,7 +3,7 @@
 import sqlite3
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.alerts import ALERT_STATUSES, SEVERITIES, Alert, AlertStatus, Severity
@@ -17,8 +17,8 @@ _EVENT_INSERT = (
     f"VALUES ({', '.join(':' + column for column in _EVENT_COLUMNS)})"
 )
 _ALERT_INSERT = (
-    f"INSERT INTO alerts ({', '.join(_ALERT_COLUMNS)}) "
-    f"VALUES ({', '.join(':' + column for column in _ALERT_COLUMNS)})"
+    f"INSERT INTO alerts (id, {', '.join(_ALERT_COLUMNS)}) "
+    f"VALUES (:id, {', '.join(':' + column for column in _ALERT_COLUMNS)})"
 )
 _ALERT_SELECT = (
     "SELECT a.*, (SELECT COUNT(*) FROM alert_events ae WHERE ae.alert_id = a.id) "
@@ -39,6 +39,14 @@ class StoredAlert:
     event_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class AlertWrite:
+    alert_id: int | None = None
+    created: bool = False
+    updated: bool = False
+    merged_alerts: int = 0
+
+
 def _utc_text(value: datetime, name: str) -> str:
     if not isinstance(value, datetime) or value.utcoffset() is None:
         raise ValueError(f"{name} must be a timezone-aware datetime.")
@@ -50,6 +58,36 @@ def _page(limit: int, offset: int) -> None:
         raise ValueError("limit must be an integer between 1 and 1000.")
     if type(offset) is not int or offset < 0:
         raise ValueError("offset must be a nonnegative integer.")
+
+
+def _evidence_ids(event_ids: Iterable[int]) -> tuple[int, ...]:
+    values = tuple(event_ids)
+    if not values or any(type(value) is not int or not 1 <= value < 2**63 for value in values):
+        raise ValueError("An alert requires positive SQLite event IDs as evidence.")
+    return tuple(dict.fromkeys(values))
+
+
+def _alert_data(alert: Alert) -> dict[str, Any]:
+    if alert.severity not in SEVERITIES or alert.status not in ALERT_STATUSES:
+        raise ValueError("Invalid alert severity or status.")
+    for name in ("rule_id", "title", "description", "grouping_key"):
+        if not isinstance(getattr(alert, name), str) or not getattr(alert, name).strip():
+            raise ValueError(f"Alert {name} must not be empty.")
+    data = {name: getattr(alert, name) for name in _ALERT_COLUMNS}
+    for name in ("first_seen", "last_seen", "created_at"):
+        data[name] = _utc_text(data[name], name)
+    if data["first_seen"] > data["last_seen"]:
+        raise ValueError("first_seen must not be later than last_seen.")
+    return data
+
+
+def _shift_time(value: datetime, seconds: int) -> datetime:
+    value = value.astimezone(timezone.utc)
+    try:
+        return value + timedelta(seconds=seconds)
+    except OverflowError:
+        limit = datetime.min if seconds < 0 else datetime.max
+        return limit.replace(tzinfo=timezone.utc)
 
 
 def _where(
@@ -174,21 +212,17 @@ class SQLiteStore:
             cursor.close()
 
     def insert_alert(self, alert: Alert, event_ids: Iterable[int]) -> int:
-        evidence_ids = tuple(event_ids)
-        if not evidence_ids or any(type(value) is not int or value < 1 for value in evidence_ids):
-            raise ValueError("An alert requires positive event IDs as evidence.")
-        evidence_ids = tuple(dict.fromkeys(evidence_ids))
-        if alert.severity not in SEVERITIES or alert.status not in ALERT_STATUSES:
-            raise ValueError("Invalid alert severity or status.")
-        for name in ("rule_id", "title", "description", "grouping_key"):
-            if not isinstance(getattr(alert, name), str) or not getattr(alert, name).strip():
-                raise ValueError(f"Alert {name} must not be empty.")
-        data = {name: getattr(alert, name) for name in _ALERT_COLUMNS}
-        for name in ("first_seen", "last_seen", "created_at"):
-            data[name] = _utc_text(data[name], name)
-        if data["first_seen"] > data["last_seen"]:
-            raise ValueError("first_seen must not be later than last_seen.")
+        evidence_ids = _evidence_ids(event_ids)
+        data = _alert_data(alert)
         with transaction(self.connection):
+            # Reserve merged IDs too: an old reference must never name a new alert.
+            highest_id = self.connection.execute(
+                "SELECT MAX(value) FROM (SELECT MAX(id) AS value FROM alerts "
+                "UNION ALL SELECT MAX(former_id) AS value FROM alert_merges)",
+            ).fetchone()[0] or 0
+            if highest_id == 2**63 - 1:
+                raise ValueError("The SQLite alert ID space is exhausted.")
+            data["id"] = highest_id + 1
             cursor = self.connection.execute(_ALERT_INSERT, data)
             alert_id = cursor.lastrowid
             self.connection.executemany(
@@ -197,8 +231,127 @@ class SQLiteStore:
             )
         return alert_id
 
+    def _represented_evidence(self, alert: Alert, evidence_ids: tuple[int, ...]) -> set[int]:
+        represented = set()
+        # Stay below SQLite installations' parameter limits for large windows.
+        for offset in range(0, len(evidence_ids), 500):
+            batch = evidence_ids[offset:offset + 500]
+            rows = self.connection.execute(
+                "SELECT DISTINCT ae.event_id FROM alert_events ae JOIN alerts a ON a.id = ae.alert_id "
+                "WHERE a.rule_id = ? AND a.grouping_key = ? "
+                f"AND ae.event_id IN ({', '.join('?' for _ in batch)})",
+                (alert.rule_id, alert.grouping_key, *batch),
+            )
+            represented.update(row[0] for row in rows)
+        return represented
+
+    def _related_open_alerts(self, alert: Alert, max_gap_seconds: int) -> list[StoredAlert]:
+        first, last = alert.first_seen, alert.last_seen
+        related: dict[int, StoredAlert] = {}
+        while True:
+            rows = self.connection.execute(
+                _ALERT_SELECT + " WHERE a.rule_id = ? AND a.grouping_key = ? "
+                "AND a.status IN ('new', 'investigating') AND a.first_seen <= ? AND a.last_seen >= ?",
+                (
+                    alert.rule_id, alert.grouping_key,
+                    _utc_text(_shift_time(last, max_gap_seconds), "end"),
+                    _utc_text(_shift_time(first, -max_gap_seconds), "start"),
+                ),
+            ).fetchall()
+            previous_count = len(related)
+            for row in rows:
+                stored = _stored_alert(row)
+                related[stored.id] = stored
+                first = min(first, stored.alert.first_seen)
+                last = max(last, stored.alert.last_seen)
+            if len(related) == previous_count:
+                return sorted(related.values(), key=lambda item: item.id)
+
+    def correlate_alert(
+        self, alert: Alert, event_ids: Iterable[int], *, max_gap_seconds: int,
+    ) -> AlertWrite:
+        """Create or extend an open incident when a finding has fresh evidence.
+
+        Matching rule/group intervals within max_gap_seconds join together.
+        Evidence already represented by that rule/group, including closed
+        alerts, causes no write. Resolved/false-positive rows stay untouched.
+        Bridged open incidents retain the smallest ID and all evidence, with
+        investigating status winning over new. The entire operation is atomic.
+        """
+        evidence_ids = _evidence_ids(event_ids)
+        data = _alert_data(alert)
+        if alert.status != "new":
+            raise ValueError("A detection candidate must have status 'new'.")
+        if type(max_gap_seconds) is not int or not 1 <= max_gap_seconds <= 86400:
+            raise ValueError("max_gap_seconds must be an integer between 1 and 86400.")
+        with transaction(self.connection):
+            if self._represented_evidence(alert, evidence_ids) == set(evidence_ids):
+                return AlertWrite()
+            related = self._related_open_alerts(alert, max_gap_seconds)
+            if related:
+                target = related[0]
+                alert_id = target.id
+                for other in related[1:]:
+                    self.connection.execute(
+                        "INSERT INTO alert_events (alert_id, event_id) "
+                        "SELECT ?, event_id FROM alert_events WHERE alert_id = ? "
+                        "ON CONFLICT(alert_id, event_id) DO NOTHING",
+                        (alert_id, other.id),
+                    )
+                    self.connection.execute(
+                        "UPDATE alert_merges SET alert_id = ? WHERE alert_id = ?", (alert_id, other.id),
+                    )
+                    self.connection.execute(
+                        "INSERT INTO alert_merges (former_id, alert_id, merged_at) VALUES (?, ?, ?)",
+                        (other.id, alert_id, _utc_text(datetime.now(timezone.utc), "merged_at")),
+                    )
+                    self.connection.execute("DELETE FROM alerts WHERE id = ?", (other.id,))
+                self.connection.executemany(
+                    "INSERT INTO alert_events (alert_id, event_id) VALUES (?, ?) "
+                    "ON CONFLICT(alert_id, event_id) DO NOTHING",
+                    ((alert_id, event_id) for event_id in evidence_ids),
+                )
+                first = min([data["first_seen"], *(_utc_text(item.alert.first_seen, "first_seen") for item in related)])
+                last = max([data["last_seen"], *(_utc_text(item.alert.last_seen, "last_seen") for item in related)])
+                status = "investigating" if any(item.alert.status == "investigating" for item in related) else "new"
+                severity = max([alert.severity, *(item.alert.severity for item in related)], key=SEVERITIES.index)
+                self.connection.execute(
+                    "UPDATE alerts SET title = ?, severity = ?, first_seen = ?, last_seen = ?, status = ? WHERE id = ?",
+                    (alert.title, severity, first, last, status, alert_id),
+                )
+            else:
+                alert_id = self.insert_alert(alert, evidence_ids)
+            count = self.connection.execute(
+                "SELECT COUNT(*) FROM alert_events WHERE alert_id = ?", (alert_id,),
+            ).fetchone()[0]
+            self.connection.execute(
+                "UPDATE alerts SET description = ? WHERE id = ?",
+                (f"Correlated {count} Apache evidence records. Detection: {alert.description}", alert_id),
+            )
+            return AlertWrite(
+                alert_id=alert_id, created=not related, updated=bool(related),
+                merged_alerts=max(0, len(related) - 1),
+            )
+
+    def set_alert_status(self, alert_id: int, status: AlertStatus) -> StoredAlert | None:
+        """Set an analyst status without changing evidence or detection times."""
+        if type(alert_id) is not int or not 1 <= alert_id < 2**63:
+            raise ValueError("alert_id must be a positive SQLite integer.")
+        if status not in ALERT_STATUSES:
+            raise ValueError("status must be new, investigating, resolved, or false_positive.")
+        with transaction(self.connection):
+            stored = self.get_alert(alert_id)
+            if stored is not None and stored.alert.status != status:
+                self.connection.execute("UPDATE alerts SET status = ? WHERE id = ?", (status, stored.id))
+                stored = self.get_alert(alert_id)
+            return stored
+
+    def _canonical_alert_id(self, alert_id: int) -> int:
+        row = self.connection.execute("SELECT alert_id FROM alert_merges WHERE former_id = ?", (alert_id,)).fetchone()
+        return row[0] if row is not None else alert_id
+
     def get_alert(self, alert_id: int) -> StoredAlert | None:
-        row = self.connection.execute(_ALERT_SELECT + " WHERE a.id = ?", (alert_id,)).fetchone()
+        row = self.connection.execute(_ALERT_SELECT + " WHERE a.id = ?", (self._canonical_alert_id(alert_id),)).fetchone()
         return _stored_alert(row) if row is not None else None
 
     def list_alerts(
@@ -231,6 +384,6 @@ class SQLiteStore:
         rows = self.connection.execute(
             "SELECT e.* FROM events e JOIN alert_events ae ON ae.event_id = e.id "
             "WHERE ae.alert_id = ? ORDER BY e.timestamp, e.id LIMIT ? OFFSET ?",
-            (alert_id, limit, offset),
+            (self._canonical_alert_id(alert_id), limit, offset),
         ).fetchall()
         return [_stored_event(row) for row in rows]

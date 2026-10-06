@@ -9,7 +9,7 @@ import click
 from flask import Flask, current_app, g
 from flask.cli import with_appcontext
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APPLICATION_ID = 0x41504143  # APAC: identifies databases owned by this application.
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
@@ -60,21 +60,22 @@ def require_schema(connection: sqlite3.Connection) -> None:
     if application_id != APPLICATION_ID or version != SCHEMA_VERSION:
         raise RuntimeError(
             "Database schema is missing or incompatible. Run 'flask --app app init-db' "
-            "for a new database; existing incompatible databases require a migration."
+            "to initialize a new database or upgrade this application's version 1 database. "
+            "Other incompatible databases require a migration."
         )
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
-    """Create schema version 1 atomically without clearing existing evidence."""
+    """Initialize version 2 or upgrade owned version 1 without clearing evidence."""
     with transaction(connection):
         application_id = connection.execute("PRAGMA application_id").fetchone()[0]
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if application_id not in (0, APPLICATION_ID) or version not in (0, SCHEMA_VERSION):
+        if application_id not in (0, APPLICATION_ID) or version not in (0, 1, SCHEMA_VERSION):
             raise RuntimeError("Refusing to initialize a database with an incompatible schema.")
         tables = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'"
         ).fetchall()
-        if (version == 0 and tables) or (version == SCHEMA_VERSION and application_id != APPLICATION_ID):
+        if (version == 0 and tables) or (version in (1, SCHEMA_VERSION) and application_id != APPLICATION_ID):
             raise RuntimeError("Refusing to initialize a database with an unrecognized schema.")
 
         statement = ""
@@ -111,7 +112,7 @@ def close_database(error: BaseException | None = None) -> None:
 @click.command("init-db")
 @with_appcontext
 def init_database_command() -> None:
-    """Initialize the local SQLite schema without removing existing records."""
+    """Initialize or upgrade the local schema without removing existing records."""
     try:
         initialize_database(get_database())
     except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:

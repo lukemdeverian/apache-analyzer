@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS alert_events (
     PRIMARY KEY (alert_id, event_id)
 );
 
+CREATE TABLE IF NOT EXISTS alert_merges (
+    former_id INTEGER PRIMARY KEY CHECK (former_id > 0),
+    alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE RESTRICT,
+    merged_at TEXT NOT NULL,
+    CHECK (former_id > alert_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp, id);
 CREATE INDEX IF NOT EXISTS idx_events_source_time ON events(source_ip, timestamp, id);
 CREATE INDEX IF NOT EXISTS idx_events_type_time ON events(log_type, timestamp, id);
@@ -59,3 +66,4 @@ CREATE INDEX IF NOT EXISTS idx_alerts_source_time ON alerts(source_ip, first_see
 CREATE INDEX IF NOT EXISTS idx_alerts_status_time ON alerts(status, last_seen, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_correlation ON alerts(rule_id, grouping_key, status, last_seen);
 CREATE INDEX IF NOT EXISTS idx_alert_events_event ON alert_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_alert_merges_target ON alert_merges(alert_id);

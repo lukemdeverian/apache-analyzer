@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 
 from app import create_app
+from app.alerts import Alert
 from app.database import (
     APPLICATION_ID, SCHEMA_VERSION, connect_database, get_database, initialize_database,
 )
@@ -20,7 +21,7 @@ def test_initialization_creates_versioned_schema_and_enables_foreign_keys():
         tables = {
             row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        assert tables == {"events", "alerts", "alert_events"}
+        assert tables == {"events", "alerts", "alert_events", "alert_merges"}
         assert connection.execute("PRAGMA application_id").fetchone()[0] == APPLICATION_ID
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -45,7 +46,7 @@ def test_reinitialization_preserves_evidence():
         connection.close()
 
 
-@pytest.mark.parametrize("foreign_application, version", [(123, 0), (APPLICATION_ID, 2)])
+@pytest.mark.parametrize("foreign_application, version", [(123, 0), (APPLICATION_ID, SCHEMA_VERSION + 1)])
 def test_incompatible_databases_are_rejected_without_changes(foreign_application, version):
     connection = connect_database(":memory:")
     try:
@@ -182,3 +183,87 @@ def test_init_db_cli_reports_incompatible_schema(tmp_path):
 
     assert result.exit_code == 1
     assert "incompatible schema" in result.output
+
+
+def version_one_database(path=":memory:"):
+    """Reproduce version 1: the existing schema minus the new merge registry."""
+    connection = connect_database(path)
+    initialize_database(connection)
+    store = SQLiteStore(connection)
+    event = parse_access_line(LINE)
+    event_id = store.insert_event(event)
+    alert_id = store.insert_alert(Alert(
+        rule_id="APACHE-SENSITIVE-FILE", title="Existing alert", description="Keep this evidence.",
+        severity="medium", grouping_key="ip:192.0.2.10", source_ip="192.0.2.10",
+        status="investigating", first_seen=event.timestamp, last_seen=event.timestamp,
+    ), [event_id])
+    original = store.get_alert(alert_id)
+    connection.execute("DROP TABLE alert_merges")
+    connection.execute("PRAGMA user_version = 1")
+    return connection, event_id, alert_id, original
+
+
+def test_version_one_upgrade_preserves_events_alerts_status_and_evidence():
+    connection, event_id, alert_id, original = version_one_database()
+    try:
+        with pytest.raises(RuntimeError, match="init-db"):
+            SQLiteStore(connection)
+        initialize_database(connection)
+        store = SQLiteStore(connection)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert store.get_alert(alert_id) == original
+        assert store.get_alert_events(alert_id)[0].id == event_id
+        assert store.get_event(event_id).event.raw_log == LINE
+        next_id = store.insert_alert(original.alert, [event_id])
+        assert next_id > alert_id
+        assert not connection.in_transaction
+    finally:
+        connection.close()
+
+
+def test_failed_version_one_upgrade_rolls_back_new_tables_and_version(monkeypatch, tmp_path):
+    from app.database import SCHEMA_PATH
+
+    connection, event_id, alert_id, original = version_one_database()
+    broken = tmp_path / "broken-upgrade.sql"
+    broken.write_text(SCHEMA_PATH.read_text(encoding="utf-8") + "\nCREATE TABLE invalid (broken SQL !!!);\n", encoding="utf-8")
+    monkeypatch.setattr("app.database.SCHEMA_PATH", broken)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            initialize_database(connection)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        assert connection.execute("SELECT status FROM alerts WHERE id = ?", (alert_id,)).fetchone()[0] == "investigating"
+        assert connection.execute("SELECT event_id FROM alert_events WHERE alert_id = ?", (alert_id,)).fetchone()[0] == event_id
+        assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'alert_merges'").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_init_db_cli_upgrades_version_one_database_without_replacing_data(tmp_path):
+    path = tmp_path / "version-one.sqlite3"
+    connection, event_id, alert_id, original = version_one_database(path)
+    connection.close()
+    app = create_app({"TESTING": True, "DATABASE_PATH": str(path)})
+    result = app.test_cli_runner().invoke(args=["init-db"])
+    assert result.exit_code == 0, result.output
+    reopened = connect_database(path)
+    try:
+        store = SQLiteStore(reopened)
+        assert store.get_alert(alert_id) == original
+        assert store.get_alert_events(alert_id)[0].id == event_id
+    finally:
+        reopened.close()
+
+
+def test_version_one_marker_without_application_ownership_is_rejected():
+    connection, event_id, alert_id, original = version_one_database()
+    connection.execute("PRAGMA application_id = 0")
+    try:
+        with pytest.raises(RuntimeError, match="unrecognized"):
+            initialize_database(connection)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        assert connection.execute("SELECT status FROM alerts WHERE id = ?", (alert_id,)).fetchone()[0] == "investigating"
+    finally:
+        connection.close()

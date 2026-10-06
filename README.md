@@ -10,7 +10,7 @@ Flask dashboard. It runs directly on Python without Docker or a database server.
 The initial implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Current progress: increment 6 of 10
+## Current progress: increment 7 of 10
 
 Implemented:
 
@@ -33,10 +33,13 @@ Implemented:
 - Five request signatures for traversal, SQL injection, XSS, sensitive files, and unusual methods.
 - Server-wide windows for HTTP 5xx responses and severe Apache error-log records.
 - Bounded inspection decoding, preserved original evidence, and configurable expected HTTP methods.
+- Automatic detection and persistent alert correlation during CLI file imports.
+- Replay deduplication, backfill handling, complete evidence links, and atomic pipeline rollback.
+- Analyst status commands, preserved merged-alert references, and a version 1-to-2 schema upgrade.
 
-File ingestion is available through the CLI; detection is available
-through Python. Automatic alert saving and correlation, APIs, and the dashboard
-are planned in subsequent increments. The only HTTP route currently available is
+File ingestion, detection/correlation, and analyst status updates are available
+through the CLI and Python. APIs and the dashboard are planned in subsequent
+increments. The only HTTP route currently available is
 `GET /health`, which works without opening a database.
 
 ## Run locally
@@ -91,7 +94,8 @@ remote deployment are outside the current scope.
 
 ## Import Apache log files
 
-Initialize the database once with `init-db`, then choose the log type explicitly.
+Run `init-db` to initialize the database or upgrade one from an earlier increment,
+then choose the log type explicitly. Imports now detect and save alerts automatically.
 You can try the committed synthetic fixtures:
 
 ```powershell
@@ -115,7 +119,8 @@ included in both the summary and stored records.
 Each record is limited to 65536 bytes by default, excluding its line ending.
 Change this with `--max-line-bytes`, from 1 through 1048576. Oversized lines are
 drained through bounded reads and counted once; the remaining file continues to
-be processed. Memory usage does not grow with the number of imported records.
+be processed. The file reader uses bounded buffers; detection retains evidence
+in active time windows while scanning.
 
 The successful summary reports:
 
@@ -131,16 +136,39 @@ The successful summary reports:
 | `rejected_lines` | Total malformed, encoding-error, oversized, and invalid-value lines |
 
 Add `--json` to print the successful summary as JSON. It also contains
-`source_file`, `log_type`, and `assumed_timezone`. Blank and rejected lines are
+`source_file`, `log_type`, `assumed_timezone`, and a nested `detection` summary.
+Blank and rejected lines are
 skipped; an import must contain at least one usable Apache record to succeed.
 An empty file, a wrong format choice, or unrelated log content produces a
 nonzero exit code with a rejection summary.
 
-Each file is saved in a single transaction. A file-read or database failure
-rolls back all events from that import and reports a nonzero exit code. Earlier
-imports remain intact. Repeating a successful import appends new events.
+Each file and its detection scan are saved in a single transaction. A file-read,
+detector, or database failure rolls back that import's events and all alert/evidence
+creations, updates, and merges from the scan. Earlier imports remain intact.
+Repeating a successful import appends new events, which count as fresh evidence.
 Collection is batch-oriented: the importer reads to EOF and does not follow
-log rotation. Automatic alert detection is added in later increments.
+log rotation. Each scan replays all stored evidence in timestamp order, so late
+imports can complete earlier detection windows. Scan time therefore grows with
+stored history.
+
+Both import summaries and explicit detection scans report:
+
+| Detection field | Meaning |
+| --- | --- |
+| `findings` | Qualifying request/window findings examined across stored history |
+| `alerts_created` | New alert records created |
+| `alert_updates` | Correlation update operations, including multiple updates to the same alert |
+| `alerts_merged` | Open alert records combined into retained alerts |
+| `findings_unchanged` | Findings whose evidence was already represented by the same rule/group |
+
+Analyze previously stored records without importing another file:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app detect --json
+```
+
+Repeating `detect` with unchanged evidence and settings creates no duplicate
+alerts, evidence links, or status changes.
 
 ## Local storage
 
@@ -152,10 +180,13 @@ Flask application context. Initialize the configured database with:
 .\.venv\Scripts\python.exe -m flask --app app init-db
 ```
 
-This creates the database file, parent directory, tables, and indexes. Repeating
-the command preserves existing events and alerts. The schema has an application
-identifier and version marker; unrelated, unrecognized, or incompatible databases
-are rejected. Schema migrations are not implemented in this increment.
+This creates the database file, parent directory, tables, and indexes. Schema
+version 2 adds `alert_merges` to retain references to combined alert IDs.
+For an owned version 1 database, the same command upgrades it atomically while
+preserving events, alerts, statuses, and evidence links. Run it once when updating
+from increment 6 or earlier. Repeating it preserves existing data. A failed upgrade
+rolls back the new schema and version together. The application identifier and
+version marker reject unrelated, unrecognized, and unsupported databases.
 
 `DATABASE_PATH` accepts a filesystem path. Database URLs and SQLite URI options
 are rejected. Tests can use `connect_database(":memory:")` directly for isolated
@@ -169,6 +200,8 @@ in-memory storage.
 | `list_events(...)` / `count_events(...)` | Filter by source IP, log type, and inclusive timestamp range |
 | `iter_events(...)` | Stream all events matching those filters in timestamp/ID order without a page limit |
 | `insert_alert(alert, event_ids)` / `get_alert(id)` | Atomically save an alert and links to existing evidence |
+| `correlate_alert(alert, event_ids, max_gap_seconds=...)` | Create, extend, or merge open alerts for fresh evidence in the same rule/group |
+| `set_alert_status(id, status)` | Set an analyst status while preserving evidence and detection times |
 | `list_alerts(...)` / `count_alerts(...)` | Filter by source IP, rule, severity, status, and inclusive first-seen range |
 | `get_alert_events(id, ...)` | Retrieve linked evidence in timestamp/ID order |
 
@@ -206,7 +239,8 @@ Standalone event writes commit immediately. Use `transaction(connection)` to
 commit a batch together or roll it back on an exception. Alert creation requires
 at least one existing event and deduplicates its evidence IDs. Invalid evidence
 links roll back the entire alert creation, including when it runs inside a larger
-transaction. There is no automatic detection or alert correlation yet.
+transaction. Raw `ingest_file(...)` remains an evidence-only helper; the CLI uses
+`analyze_file(...)` to import and run the persistent detection pipeline together.
 
 ## Apache detections
 
@@ -319,8 +353,8 @@ Single-request findings contain one event ID, `threshold=1`, and
 Records are processed by UTC timestamp, with database ID breaking ties. Both
 window boundaries are inclusive. Findings use matching records through the
 current anchor and exclude later records. For window rules, every new qualifying
-record at or above the threshold emits a finding. Overlapping findings will be correlated
-and saved in increment 7. Different rule types can describe the same evidence.
+record at or above the threshold emits a finding. The persistent pipeline correlates
+these findings into alerts. Different rule types can describe the same evidence.
 
 `iter_findings(store, start=..., end=..., source_ip=...)` filters emitted anchors.
 Time filters require timezone-aware datetimes. A start filter loads earlier
@@ -360,6 +394,71 @@ The method collection must contain valid, nonempty HTTP method tokens.
 The detector groups across imported files in the same database, so use logs from
 the same server context. Reimporting a file adds duplicate evidence that also
 counts toward detection thresholds.
+
+## Alert correlation and investigation
+
+Alerts group by rule ID and the finding's grouping key. Only `new` and
+`investigating` alerts are extended automatically. Their evidence intervals join
+when separated by no more than the rule's configured window, inclusive at the
+boundary. Single-request signatures use a 300-second correlation gap by default.
+Evidence IDs are unique within each alert, and its first/last timestamps cover
+all correlated findings. The stored evidence count can exceed a single window's
+request count.
+
+Late imports can connect previously separate open alerts. Those alerts combine
+under the smallest existing ID, retaining that alert's creation time, all linked
+evidence, the highest severity, and `investigating` status if any combined alert
+had that status. Former IDs resolve to the retained alert for reads, evidence,
+and status changes; they are reserved and never reused for another alert.
+
+A finding whose entire evidence set is already represented by the same rule/group
+causes no write. `resolved` and `false_positive` alerts keep their status, metadata,
+and evidence during scans. Fresh evidence can create or extend an open alert for
+review, including older records newly imported into a previously reviewed period.
+These decisions apply to the current rules and settings; scans retain prior alerts
+if the detection configuration later changes.
+
+Use an existing alert ID to record an analyst decision:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app alert-status 1 investigating
+.\.venv\Scripts\python.exe -m flask --app app alert-status 1 resolved
+```
+
+Statuses are `new`, `investigating`, `resolved`, and `false_positive`. Explicitly
+setting a closed alert back to `new` or `investigating` reopens it for correlation.
+Missing IDs and invalid statuses report a nonzero exit code. Merged IDs report
+the retained ID when a status is changed. Status changes preserve evidence,
+first/last timestamps, and creation time.
+
+The Python pipeline accepts a custom detector and request correlation gap:
+
+```python
+from dotenv import load_dotenv
+from app import create_app
+from app.database import get_database
+from app.detection import DetectionEngine, RuleSettings
+from app.pipeline import analyze_file, detect_events
+from app.storage import SQLiteStore
+
+load_dotenv(".env")
+app = create_app()
+with app.app_context():
+    store = SQLiteStore(get_database())
+    engine = DetectionEngine({"APACHE-AUTH-FAILURES": RuleSettings(6, 180)})
+    result = analyze_file("tests/fixtures/access_combined.txt", "access", store,
+                          engine=engine, request_correlation_seconds=120)
+    print(result.as_dict())
+    print(detect_events(store, engine=engine, request_correlation_seconds=120).as_dict())
+    for stored in store.list_alerts():
+        print(stored.id, stored.alert.rule_id, stored.alert.status, stored.event_count)
+```
+
+The database must already be initialized or upgraded. Request correlation gaps
+accept integer seconds from 1 through 86400. Both pipeline helpers honor a
+caller's outer `transaction(connection)`, allowing the caller to roll back an
+entire import/scan together. `DetectionEngine.iter_findings(...)` remains read-only
+for callers who only want to inspect findings.
 
 ## Parse an Apache record
 
