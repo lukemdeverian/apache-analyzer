@@ -387,3 +387,49 @@ class SQLiteStore:
             (self._canonical_alert_id(alert_id), limit, offset),
         ).fetchall()
         return [_stored_event(row) for row in rows]
+
+    def statistics(
+        self, *, source_ip: str | None = None,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate all matching rows, independently of list pagination.
+
+        Event dates filter timestamp; alert dates filter first_seen. A source
+        filter excludes server-wide alerts that have no single source IP.
+        Use a surrounding transaction for a consistent snapshot of all counts.
+        """
+        event_where, event_values = _event_filters(source_ip, None, start, end)
+        alert_where, alert_values = _alert_filters(source_ip, None, None, None, start, end)
+        events = dict(self.connection.execute(
+            "SELECT COUNT(*) AS total, COUNT(DISTINCT source_ip) AS distinct_source_ips, "
+            f"MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen FROM events{event_where}",
+            event_values,
+        ).fetchone())
+        alerts = dict(self.connection.execute(
+            "SELECT COUNT(*) AS total, MIN(a.first_seen) AS first_seen, "
+            f"MAX(a.last_seen) AS last_seen FROM alerts a{alert_where}", alert_values,
+        ).fetchone())
+        # Columns and table names are fixed here; user values stay bound.
+        for column, defaults in (
+            ("log_type", ("access", "error")),
+            ("status", ALERT_STATUSES),
+            ("severity", SEVERITIES),
+            ("rule_id", ()),
+        ):
+            is_event = column == "log_type"
+            table, prefix = ("events", "") if is_event else ("alerts a", "a.")
+            where, values = (event_where, event_values) if is_event else (alert_where, alert_values)
+            counts = dict.fromkeys(defaults, 0)
+            counts.update(
+                (row[0], row[1]) for row in self.connection.execute(
+                    f"SELECT {prefix}{column}, COUNT(*) FROM {table}{where} "
+                    f"GROUP BY {prefix}{column} ORDER BY {prefix}{column}", values,
+                )
+            )
+            (events if is_event else alerts)["by_" + column] = counts
+        alerts["open"] = alerts["by_status"]["new"] + alerts["by_status"]["investigating"]
+        for aggregate in (events, alerts):
+            for name in ("first_seen", "last_seen"):
+                if aggregate[name] is not None:
+                    aggregate[name] = datetime.fromisoformat(aggregate[name])
+        return {"events": events, "alerts": alerts}

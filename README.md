@@ -10,7 +10,7 @@ Flask dashboard. It runs directly on Python without Docker or a database server.
 The initial implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Current progress: increment 7 of 10
+## Current progress: increment 8 of 10
 
 Implemented:
 
@@ -36,11 +36,14 @@ Implemented:
 - Automatic detection and persistent alert correlation during CLI file imports.
 - Replay deduplication, backfill handling, complete evidence links, and atomic pipeline rollback.
 - Analyst status commands, preserved merged-alert references, and a version 1-to-2 schema upgrade.
+- Paginated JSON APIs for events, alerts, chronological evidence, and analyst status changes.
+- Default rule catalog and database statistics with source-IP and date filters.
+- API validation, JSON error responses, consistent read snapshots, and atomic status updates.
 
 File ingestion, detection/correlation, and analyst status updates are available
-through the CLI and Python. APIs and the dashboard are planned in subsequent
-increments. The only HTTP route currently available is
-`GET /health`, which works without opening a database.
+through the CLI and Python. Investigation APIs are also available over HTTP;
+the dashboard and browser file uploads are planned for increment 9.
+`GET /health` and `GET /api/rules` work without opening a database.
 
 ## Run locally
 
@@ -459,6 +462,123 @@ accept integer seconds from 1 through 86400. Both pipeline helpers honor a
 caller's outer `transaction(connection)`, allowing the caller to roll back an
 entire import/scan together. `DetectionEngine.iter_findings(...)` remains read-only
 for callers who only want to inspect findings.
+
+## Investigation APIs
+
+Run `init-db`, import Apache files through the CLI, and start `run.py` before
+querying the APIs at <http://127.0.0.1:5000>. This increment uses the existing
+version 2 database schema; no new migration is required.
+
+| Method | Endpoint | Result |
+| --- | --- | --- |
+| GET | `/api/events` | Paginated parsed records with raw evidence and provenance |
+| GET | `/api/events/<id>` | One event in an `item` object |
+| GET | `/api/alerts` | Paginated alerts with evidence counts |
+| GET | `/api/alerts/<id>` | One alert in `item`, plus `requested_id` |
+| GET | `/api/alerts/<id>/events` | Paginated chronological evidence for an alert |
+| PATCH | `/api/alerts/<id>/status` | Persist an analyst status and return the updated alert |
+| GET | `/api/rules` | All 11 default rule definitions and their settings |
+| GET | `/api/stats` | Event and alert totals, date ranges, and grouped counts |
+
+Event and alert lists accept `limit` (default 100, range 1–1000), `offset`
+(default 0, nonnegative SQLite integer), and `order=asc|desc` (default `desc`).
+Events sort by timestamp and ID; alerts sort by first-seen timestamp and ID.
+Alert evidence accepts `limit` and `offset` and always sorts by timestamp and
+ID ascending. An offset beyond the results returns an empty page.
+
+List responses use this structure; `total` counts every matching row before
+pagination, and `has_more` indicates whether another page is available:
+
+```json
+{
+  "items": [],
+  "pagination": {
+    "limit": 100,
+    "offset": 0,
+    "total": 0,
+    "returned": 0,
+    "has_more": false
+  }
+}
+```
+
+Filters may be combined:
+
+| Endpoint | Additional query parameters |
+| --- | --- |
+| `/api/events` | `source_ip`, `log_type=access|error`, `start`, `end` |
+| `/api/alerts` | `source_ip`, `rule_id`, `severity`, `status`, `start`, `end` |
+| `/api/stats` | `source_ip`, `start`, `end` |
+
+Source IPs must be IPv4 or IPv6 literals; IPv6 spelling is normalized before
+matching. Rule IDs match exactly and may contain 1–128 characters. Severity
+values are `low`, `medium`, `high`, or `critical`; statuses are `new`,
+`investigating`, `resolved`, or `false_positive`.
+
+`start` and `end` are inclusive RFC 3339 timestamps with seconds, optional
+1–6 fractional digits, and `Z` or an explicit offset. Examples are
+`2026-10-06T09:00:00Z` and `2026-10-06T02:00:00-07:00`. URL-encode a positive
+offset's `+` as `%2B`. Dates filter event timestamps and alert **first_seen**,
+including in statistics. A source-IP filter excludes server-wide alerts that
+have no single source IP. Unknown or repeated query parameters are rejected.
+
+All returned timestamps use UTC with six fractional digits and `Z`. Event
+objects include every normalized parser field; unavailable fields are `null`.
+`raw_log` preserves the decoded original record, and `source_file` and
+`line_number` identify its provenance. Alert objects include detection fields,
+status, creation time, and `event_count`; fetch their evidence through the
+separate endpoint to page through large incidents. List and statistics reads
+use a consistent database snapshot and do not run detection or change records.
+
+Merged alert IDs remain usable for detail, evidence, and status requests.
+Responses include the original `requested_id` and the surviving canonical ID
+in `item.id` or `alert_id`. Lists and statistics count surviving alerts only.
+An evidence response contains `alert_id`, `requested_id`, `items`, and
+`pagination`.
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:5000/api/alerts?status=new&limit=25'
+Invoke-RestMethod 'http://127.0.0.1:5000/api/events?log_type=error&order=asc'
+Invoke-RestMethod 'http://127.0.0.1:5000/api/stats'
+
+# Replace 1 with an existing alert ID.
+Invoke-RestMethod 'http://127.0.0.1:5000/api/alerts/1/events?limit=25'
+Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/alerts/1/status' `
+  -Method Patch -ContentType 'application/json' -Body '{"status":"investigating"}'
+```
+
+Status updates require a JSON object containing exactly `status`, with a body
+of at most 1 KiB. They are atomic and preserve evidence and detection timestamps.
+Sending the current status again leaves the alert unchanged.
+
+Statistics return `events` and `alerts` objects. Events include `total`,
+`distinct_source_ips` (excluding missing IPs), `by_log_type`, `first_seen`, and
+`last_seen`. Alerts include `total`, `open` (new plus investigating),
+`by_status`, `by_severity`, `by_rule_id`, `first_seen`, and `last_seen`.
+Counts include all matching records, independent of page limits. Log types,
+statuses, and severities include zero counts; `by_rule_id` lists rules present
+in matching alerts. Empty date ranges are `null`. Alert `last_seen` is the
+latest evidence time among alerts selected by their first-seen time.
+
+The rule catalog is marked `configuration: "defaults"`. It includes titles,
+descriptions, severity, log type, rule kind, grouping, window settings or
+`null` for request signatures, expected HTTP methods, and the default request
+correlation gap. Custom Python engine settings are not persisted, so this
+endpoint describes the built-in defaults.
+
+API errors are JSON, including missing routes and unsupported HTTP methods:
+
+```json
+{"error": {"code": "invalid_request", "message": "limit must be an integer between 1 and 1000."}}
+```
+
+Invalid parameters or JSON return 400, missing records return 404, unsupported
+methods return 405, oversized status bodies return 413, and status requests
+without a JSON content type return 415. Missing or incompatible schemas return
+503 with `database_not_ready` and initialization guidance; other database
+failures return 503 with `database_unavailable`. Internal database details are
+logged locally and omitted from error responses. Investigation responses use
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 
 ## Parse an Apache record
 
