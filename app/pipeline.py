@@ -82,10 +82,14 @@ def analyze_file(
     error_timezone: tzinfo = timezone.utc, max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
     engine: DetectionEngine | None = None,
     request_correlation_seconds: int = DEFAULT_REQUEST_CORRELATION_SECONDS,
+    source_label: str | None = None,
 ) -> AnalysisSummary:
     """Import a file and scan evidence in one transaction, including alert writes."""
     _correlation_seconds(request_correlation_seconds)
     with transaction(store.connection):
-        imported = ingest_file(path, log_type, store, error_timezone=error_timezone, max_line_bytes=max_line_bytes)
+        imported = ingest_file(
+            path, log_type, store, error_timezone=error_timezone,
+            max_line_bytes=max_line_bytes, source_label=source_label,
+        )
         detection = detect_events(store, engine=engine, request_correlation_seconds=request_correlation_seconds)
     return AnalysisSummary(import_summary=imported, detection=detection)

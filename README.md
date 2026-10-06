@@ -10,7 +10,7 @@ Flask dashboard. It runs directly on Python without Docker or a database server.
 The initial implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Current progress: increment 8 of 10
+## Current progress: increment 9 of 10
 
 Implemented:
 
@@ -39,11 +39,15 @@ Implemented:
 - Paginated JSON APIs for events, alerts, chronological evidence, and analyst status changes.
 - Default rule catalog and database statistics with source-IP and date filters.
 - API validation, JSON error responses, consistent read snapshots, and atomic status updates.
+- Local dashboard with overview charts, filters, paginated lists, and alert/event details.
+- Browser imports with explicit Apache format selection, size limits, rejection counts, and atomic analysis.
+- Literal raw-evidence rendering, analyst status controls, responsive layout, and real-browser checks.
 
 File ingestion, detection/correlation, and analyst status updates are available
-through the CLI and Python. Investigation APIs are also available over HTTP;
-the dashboard and browser file uploads are planned for increment 9.
-`GET /health` and `GET /api/rules` work without opening a database.
+through the dashboard, CLI, and Python. Investigation APIs are also available
+over HTTP. Demo logs and the final workflow guide are planned for increment 10.
+The dashboard HTML, `GET /health`, and `GET /api/rules` load without opening a
+database; dashboard data requests require an initialized schema.
 
 ## Run locally
 
@@ -57,7 +61,8 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe run.py
 ```
 
-Open <http://127.0.0.1:5000/health> to check the application:
+Open <http://127.0.0.1:5000/> for the dashboard. The health check is available
+at <http://127.0.0.1:5000/health>:
 
 ```json
 {"service": "apache-analyzer", "status": "ok"}
@@ -94,6 +99,51 @@ Debug values accept `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`,
 case-insensitively. Invalid settings stop startup with a named validation error.
 The intended runtime is a local development application; authentication and
 remote deployment are outside the current scope.
+
+## Use the dashboard
+
+Start the server and open <http://127.0.0.1:5000/> in a modern browser. The
+dashboard uses bundled HTML, CSS, and JavaScript; no Node.js installation,
+frontend build, or external assets are needed to run the application.
+
+1. Select **Import logs**, choose a plain UTF-8 Apache file, and explicitly
+   select **Apache access log** or **Apache error log**. For error logs, enter
+   the server's fixed UTC offset, such as `-07:00`, or leave `UTC`.
+2. Select **Import and analyze**. The summary shows imported records, blank and
+   rejected lines, new alerts, and correlated alert updates. The overview refreshes
+   after a successful import. Reimporting adds another copy of the file's events.
+3. Browse **Alerts** and filter by status, severity, or rule. Open an alert to
+   review detection details and its linked evidence, then save an analyst status.
+4. Select **View record** to inspect the raw log, source label, line number,
+   and parsed fields. **Events** also lets you browse evidence independently of
+   alerts, including records that did not trigger a rule.
+
+The shared source-IP and UTC date filters apply to overview counts and record
+lists. Alert date filters select **first_seen**; event date filters select their
+timestamps. The overview includes all analyst statuses in the selected history;
+its open-alert count includes new and investigating alerts. Alert-specific
+filters affect the alert list. **Clear** resets all filters. Lists and linked
+evidence use 25-record pages; **Refresh** picks up changes made through the CLI.
+**Detection rules** describes all 11 built-in defaults. Alert details can also
+be opened directly using a URL such as `/#alerts/1`, including former merged IDs.
+
+Browser files are limited to 10 MiB, with an additional 64 KiB allowance for
+multipart request metadata. Each physical log line uses the CLI's default
+64 KiB limit; oversized lines are counted and skipped. Compressed files and
+custom Apache log layouts are not supported. Files without any supported
+records are rejected with a summary and leave the database unchanged.
+
+Uploads are copied to unique temporary files under `instance/uploads/` and
+removed before the import commits. Events and their alert changes commit
+together; read, storage, analysis, or cleanup failures roll back the import.
+Stored provenance uses `upload:<unique-id>/<sanitized-filename>` and the original
+physical line number, so repeated filenames remain distinguishable after the
+temporary copy is removed. CLI imports continue to record their absolute paths.
+
+Requests, messages, filenames, and raw logs are displayed as literal text.
+Missing databases show initialization guidance; initialize explicitly with
+`flask --app app init-db` before importing. The dashboard does not initialize
+or upgrade storage automatically.
 
 ## Import Apache log files
 
@@ -207,6 +257,7 @@ in-memory storage.
 | `set_alert_status(id, status)` | Set an analyst status while preserving evidence and detection times |
 | `list_alerts(...)` / `count_alerts(...)` | Filter by source IP, rule, severity, status, and inclusive first-seen range |
 | `get_alert_events(id, ...)` | Retrieve linked evidence in timestamp/ID order |
+| `statistics(...)` | Aggregate event and alert totals by source IP and inclusive date range |
 
 List helpers default to 100 records and accept `limit` (1–1000) and `offset`.
 Event and alert lists sort chronologically with stable ID ordering; set
@@ -479,6 +530,7 @@ version 2 database schema; no new migration is required.
 | PATCH | `/api/alerts/<id>/status` | Persist an analyst status and return the updated alert |
 | GET | `/api/rules` | All 11 default rule definitions and their settings |
 | GET | `/api/stats` | Event and alert totals, date ranges, and grouped counts |
+| POST | `/api/imports` | Import one Apache file and return its analysis summary |
 
 Event and alert lists accept `limit` (default 100, range 1–1000), `offset`
 (default 0, nonnegative SQLite integer), and `order=asc|desc` (default `desc`).
@@ -580,6 +632,33 @@ failures return 503 with `database_unavailable`. Internal database details are
 logged locally and omitted from error responses. Investigation responses use
 `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 
+### Upload API
+
+`POST /api/imports` accepts `multipart/form-data` with exactly one `file`, a
+required `log_type=access|error`, and an optional `error_timezone=UTC` or signed
+fixed UTC offset. It uses the built-in detection defaults. Send the header
+`X-Apache-Upload: 1`; the dashboard does this automatically. If an `Origin`
+header is present, it must match the application's origin. Cross-origin access
+is not enabled. No query parameters or server-side file paths are accepted.
+
+```powershell
+curl.exe -H 'X-Apache-Upload: 1' `
+  -F 'file=@C:\logs\access.log' -F 'log_type=access' `
+  http://127.0.0.1:5000/api/imports
+```
+
+A successful import returns 201 with a `summary` object containing the same
+line counts and nested `detection` counters as the CLI JSON output. Its
+`source_file` is the persistent upload label. A file without usable records
+returns 422 with `error.code: "no_apache_records"` and a `summary` containing
+rejection counts. Invalid form fields return 400, a missing upload header or
+foreign origin returns 403, oversized files/forms return 413, and a non-multipart
+body returns 415. Database failures retain the investigation API's 503 behavior.
+
+Python callers can pass `source_label` to `ingest_file(...)` or
+`analyze_file(...)` to identify a temporary file's records without persisting
+its temporary path. The default remains the resolved input file path.
+
 ## Parse an Apache record
 
 The parsers operate on one line at a time and do not read files, open a database,
@@ -643,3 +722,18 @@ original escaping and whitespace, with only the final line ending removed.
 The tests use in-memory databases and temporary paths and do not need a running
 server, existing logs, or an existing database. Local configuration, environments,
 databases, and imported logs are excluded from version control.
+
+An optional browser check exercises imports, filters, pagination, status saves,
+raw evidence, rejection summaries, and mobile layout in a real Chromium browser:
+
+```powershell
+node tests\browser_dashboard.mjs
+```
+
+This check requires Node.js 22 or newer and defaults to Microsoft Edge on
+Windows. Set `BROWSER_PATH` to another Chromium browser executable and `PYTHON`
+to another Python executable if needed. `APACHE_BROWSER_DEBUG_PORT` optionally
+selects a free debugging port, such as `9224`, instead of an automatic port.
+It starts its own server on an available
+local port with a temporary database and browser profile, then removes the test
+data. It does not use `.env`, the running application, or existing imported logs.

@@ -9,6 +9,7 @@ from app.api import init_app as init_api_app
 from app.cli import init_app as init_cli_app
 from app.config import Settings
 from app.database import init_app as init_database_app
+from app.dashboard import init_app as init_dashboard_app
 
 
 def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
@@ -20,6 +21,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     init_database_app(app)
     init_cli_app(app)
     init_api_app(app)
+    init_dashboard_app(app)
 
     @app.get("/health")
     def health() -> dict[str, str]:

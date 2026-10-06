@@ -27,7 +27,7 @@ continue with the next increment when the user asks to proceed.
 | 6 | Additional alerts for traversal, SQL injection and XSS probes, sensitive files, unusual methods, server/error-log bursts | `feat: expand Apache security and server error detections` | Complete |
 | 7 | Detection pipeline integration, alert correlation, evidence linking, analyst statuses | `feat: correlate Apache detections and manage alert status` | Complete |
 | 8 | Paginated APIs for events, alerts, evidence, rules, statistics, and status updates | `feat: expose Apache investigation APIs` | Complete |
-| 9 | Local dashboard with bounded file upload, overview, filters, alert details, raw evidence | `feat: add Apache analysis dashboard and file imports` | Planned |
+| 9 | Local dashboard with bounded file upload, overview, filters, alert details, raw evidence | `feat: add Apache analysis dashboard and file imports` | Complete |
 | 10 | Safe Apache demo logs, full workflow regression checks, detection catalog, final usage documentation | `docs: complete Apache analyzer demo and verification guide` | Planned |
 
 ## Verification strategy

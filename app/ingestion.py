@@ -87,6 +87,7 @@ def ingest_file(
     path: str | Path, log_type: ApacheLogType, store: SQLiteStore, *,
     error_timezone: tzinfo = timezone.utc,
     max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
+    source_label: str | None = None,
 ) -> ImportSummary:
     """Import a plain UTF-8 Apache file atomically and preserve file provenance.
 
@@ -94,14 +95,21 @@ def ingest_file(
     counted and skipped. Read/storage failures roll back this entire import.
     At least one supported record must be stored for the import to succeed.
     Repeating an import creates additional events; file deduplication is absent.
+    source_label overrides file provenance for a caller-owned temporary file.
     """
     if log_type not in ("access", "error"):
         raise ValueError("Unsupported Apache log type; choose 'access' or 'error'.")
     if type(max_line_bytes) is not int or not 1 <= max_line_bytes <= MAX_LINE_BYTES:
         raise ValueError(f"max_line_bytes must be an integer between 1 and {MAX_LINE_BYTES}.")
+    if source_label is not None and (
+        not isinstance(source_label, str) or not source_label.strip()
+        or len(source_label) > 1024 or "\0" in source_label
+    ):
+        raise ValueError("source_label must be nonempty text of at most 1024 characters without NUL.")
     source = Path(path).expanduser().resolve(strict=True)
     if not source.is_file():
         raise ValueError("Apache ingestion requires a regular log file.")
+    provenance = str(source) if source_label is None else source_label
     counts = {
         "lines_read": 0, "imported_events": 0, "blank_lines": 0,
         "malformed_lines": 0, "encoding_error_lines": 0, "oversized_lines": 0,
@@ -110,7 +118,7 @@ def ingest_file(
 
     def summary() -> ImportSummary:
         return ImportSummary(
-            source_file=str(source), log_type=log_type,
+            source_file=provenance, log_type=log_type,
             assumed_timezone=str(error_timezone) if log_type == "error" else None,
             **counts,
         )
@@ -136,7 +144,7 @@ def ingest_file(
                     counts["blank_lines"] += 1
                     continue
                 event = parse_apache_line(
-                    parse_text, log_type, source_file=str(source), line_number=line_number,
+                    parse_text, log_type, source_file=provenance, line_number=line_number,
                     error_timezone=error_timezone,
                 )
                 if event is None:

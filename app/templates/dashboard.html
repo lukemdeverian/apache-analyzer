@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Apache Analyzer</title>
+  <link rel="icon" href="{{ url_for('static', filename='mark.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+</head>
+<body data-max-upload-bytes="{{ max_upload_bytes }}">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <aside class="sidebar">
+    <a class="brand" href="#overview">
+      <img src="{{ url_for('static', filename='mark.svg') }}" alt="" width="34" height="34">
+      <span>Apache<span class="brand-subtitle">ANALYZER</span></span>
+    </a>
+    <p class="nav-label">WORKSPACE</p>
+    <nav aria-label="Main navigation">
+      <a href="#overview" data-view="overview" aria-current="page"><span aria-hidden="true">01</span> Overview</a>
+      <a href="#alerts" data-view="alerts"><span aria-hidden="true">02</span> Alerts</a>
+      <a href="#events" data-view="events"><span aria-hidden="true">03</span> Events</a>
+      <a href="#rules" data-view="rules"><span aria-hidden="true">04</span> Detection rules</a>
+    </nav>
+    <div class="sidebar-note"><span class="local-dot" aria-hidden="true"></span> Local workspace
+      <p>Apache access + error logs<br>Evidence stays on this machine.</p>
+    </div>
+  </aside>
+
+  <main id="main" tabindex="-1">
+    <header class="page-header">
+      <div><p class="eyebrow">APACHE LOG INVESTIGATION</p><h1 id="page-title">Overview</h1>
+        <p id="page-description" class="muted">Import your logs. Follow the evidence.</p></div>
+      <div class="header-actions">
+        <button id="refresh" class="button secondary" type="button">Refresh</button>
+        <button id="open-import" class="button primary" type="button">Import logs <span aria-hidden="true">+</span></button>
+      </div>
+    </header>
+    <noscript><p class="notice error">Enable JavaScript to browse records and import Apache files.</p></noscript>
+    <div id="page-message" class="notice error" role="alert" hidden></div>
+    <p id="load-status" class="sr-only" role="status" aria-live="polite"></p>
+
+    <form id="common-filters" class="filters">
+      <label>Source IP<input name="source_ip" placeholder="All logged IPs" maxlength="45" autocomplete="off"></label>
+      <label>From (UTC)<input name="start" type="datetime-local" step="1"></label>
+      <label>Through (UTC)<input name="end" type="datetime-local" step="1"></label>
+      <div class="filter-actions"><button class="button secondary" type="submit">Apply filters</button>
+        <button id="clear-filters" class="text-button" type="button">Clear</button></div>
+    </form>
+
+    <section id="view-overview" data-section="overview" aria-label="Overview">
+      <div class="stat-grid">
+        <article class="stat"><p>Imported events</p><strong id="stat-events">—</strong><span>Access and error records</span></article>
+        <article class="stat"><p>Open alerts</p><strong id="stat-open">—</strong><span>New + investigating</span></article>
+        <article class="stat"><p>High + critical</p><strong id="stat-severe">—</strong><span>All analyst statuses</span></article>
+        <article class="stat"><p>Logged IPs</p><strong id="stat-sources">—</strong><span>Distinct source addresses</span></article>
+      </div>
+      <div class="overview-grid">
+        <article class="panel"><div class="panel-heading"><h2>Alert status</h2><span class="muted">Matching history</span></div>
+          <div id="status-chart" class="status-chart"></div>
+          <p id="history-range" class="panel-footnote">No history loaded.</p>
+        </article>
+        <article class="panel"><div class="panel-heading"><h2>Detected activity</h2><span id="alert-total" class="muted"></span></div>
+          <div id="activity-chart" class="activity-chart"></div>
+        </article>
+      </div>
+      <article class="panel">
+        <div class="panel-heading"><div><h2>Recent alerts</h2><p class="muted">Newest first. All analyst statuses.</p></div>
+          <a class="text-link" href="#alerts">View all alerts <span aria-hidden="true">→</span></a></div>
+        <div class="table-scroll"><table><caption class="sr-only">Recent alerts</caption>
+          <thead><tr><th scope="col">Alert</th><th scope="col">Severity</th><th scope="col">Source</th><th scope="col">Status</th><th scope="col">First seen (UTC)</th><th scope="col">Evidence</th></tr></thead>
+          <tbody id="recent-alerts"></tbody>
+        </table></div>
+      </article>
+    </section>
+
+    <section id="view-alerts" data-section="alerts" aria-label="Alerts" hidden>
+      <form id="alert-filters" class="sub-filters">
+        <label>Status<select name="status"><option value="">All statuses</option><option value="new">New</option><option value="investigating">Investigating</option><option value="resolved">Resolved</option><option value="false_positive">False positive</option></select></label>
+        <label>Severity<select name="severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+        <label>Rule<select id="rule-filter" name="rule_id"><option value="">All rules</option></select></label>
+        <button class="button secondary" type="submit">Apply</button>
+      </form>
+      <article class="panel"><div class="table-scroll"><table><caption class="sr-only">Filtered alerts</caption>
+        <thead><tr><th scope="col">Alert</th><th scope="col">Severity</th><th scope="col">Source</th><th scope="col">Status</th><th scope="col">First seen (UTC)</th><th scope="col">Evidence</th></tr></thead>
+        <tbody id="alert-rows"></tbody>
+      </table></div><div id="alert-pagination" class="pagination"></div></article>
+      <p class="footnote">Alerts flag suspicious requests or server issues. Review the raw evidence before drawing conclusions.</p>
+    </section>
+
+    <section id="view-events" data-section="events" aria-label="Events" hidden>
+      <form id="event-filters" class="sub-filters">
+        <label>Log type<select name="log_type"><option value="">Access + error</option><option value="access">Access</option><option value="error">Error</option></select></label>
+        <button class="button secondary" type="submit">Apply</button>
+      </form>
+      <article class="panel"><div class="table-scroll"><table><caption class="sr-only">Filtered events</caption>
+        <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Type</th><th scope="col">Source</th><th scope="col">Request / message</th><th scope="col">HTTP / level</th><th scope="col">Details</th></tr></thead>
+        <tbody id="event-rows"></tbody>
+      </table></div><div id="event-pagination" class="pagination"></div></article>
+    </section>
+
+    <section id="view-rules" data-section="rules" aria-label="Detection rules" hidden>
+      <p class="footnote">Built-in defaults. Custom settings used through Python are not stored in this catalog.</p>
+      <div id="rule-cards" class="rule-grid"></div>
+    </section>
+    <footer class="page-footer">APACHE ANALYZER <span>Local analysis · UTC timestamps</span></footer>
+  </main>
+
+  <dialog id="import-dialog" aria-labelledby="import-title">
+    <div class="dialog-heading"><div><p class="eyebrow">ADD EVIDENCE</p><h2 id="import-title">Import Apache logs</h2></div>
+      <button class="close-button" type="button" data-close="import-dialog" aria-label="Close import">×</button></div>
+    <form id="import-form">
+      <p class="muted">Choose a plain UTF-8 log file, up to 10 MiB. Each import adds records and detects alerts.</p>
+      <label class="file-field">Apache log file<input id="upload-file" name="file" type="file" accept=".log,.txt,text/plain" required></label>
+      <div class="form-grid">
+        <label>Log format<select id="upload-type" name="log_type" required><option value="">Choose a format</option><option value="access">Apache access log</option><option value="error">Apache error log</option></select></label>
+        <label>Error-log timezone<input id="upload-timezone" name="error_timezone" value="UTC" placeholder="UTC or -07:00" maxlength="16" disabled><span class="field-help">Access records use their logged offset.</span></label>
+      </div>
+      <p class="footnote">Common/combined access logs and standard/legacy Apache error logs. Reimporting a file adds another copy of its events.</p>
+      <div id="import-message" class="notice" role="status" aria-live="polite" hidden></div>
+      <dl id="import-summary" class="metadata" hidden></dl>
+      <div class="dialog-actions"><button id="import-submit" class="button primary" type="submit">Import and analyze</button>
+        <button class="button secondary" type="button" data-close="import-dialog">Close</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="alert-dialog" class="wide-dialog" aria-labelledby="alert-title">
+    <div class="dialog-heading"><div><p class="eyebrow" id="alert-identity">ALERT</p><h2 id="alert-title">Alert details</h2></div>
+      <button class="close-button" type="button" data-close="alert-dialog" aria-label="Close alert">×</button></div>
+    <div id="alert-message" class="notice error" role="alert" hidden></div>
+    <p id="alert-description" class="detail-description"></p>
+    <dl id="alert-metadata" class="metadata"></dl>
+    <form id="status-form" class="status-form">
+      <label>Analyst status<select id="analyst-status" name="status"><option value="new">New</option><option value="investigating">Investigating</option><option value="resolved">Resolved</option><option value="false_positive">False positive</option></select></label>
+      <button id="save-status" class="button secondary" type="submit">Save status</button>
+      <span id="status-message" role="status" aria-live="polite"></span>
+    </form>
+    <h3 class="evidence-heading">Linked evidence <span id="evidence-count" class="muted"></span></h3>
+    <div class="table-scroll"><table><caption class="sr-only">Chronological alert evidence</caption>
+      <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Type</th><th scope="col">Source</th><th scope="col">Request / message</th><th scope="col">HTTP / level</th><th scope="col">Details</th></tr></thead>
+      <tbody id="evidence-rows"></tbody>
+    </table></div><div id="evidence-pagination" class="pagination"></div>
+  </dialog>
+
+  <dialog id="event-dialog" class="wide-dialog" aria-labelledby="event-title">
+    <div class="dialog-heading"><div><p class="eyebrow">ORIGINAL EVIDENCE</p><h2 id="event-title">Event details</h2></div>
+      <button class="close-button" type="button" data-close="event-dialog" aria-label="Close event">×</button></div>
+    <div id="event-message" class="notice error" role="alert" hidden></div>
+    <dl id="event-metadata" class="metadata"></dl>
+    <details open><summary>Raw log record</summary><pre id="raw-log" class="raw-log"></pre></details>
+    <details><summary>All parsed fields</summary><dl id="parsed-fields" class="metadata"></dl></details>
+  </dialog>
+</body>
+</html>
