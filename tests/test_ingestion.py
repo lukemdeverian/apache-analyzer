@@ -1,3 +1,4 @@
+import gzip
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -5,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from app.database import connect_database, initialize_database, transaction
-from app.ingestion import MAX_LINE_BYTES, NoApacheRecordsError, ingest_file, parse_error_timezone
+from app.ingestion import (
+    MAX_LINE_BYTES, DecompressedLogTooLargeError, InvalidGzipError,
+    NoApacheRecordsError, ingest_file, parse_error_timezone,
+)
 from app.parsers import parse_access_line
 from app.storage import SQLiteStore
 
@@ -24,6 +28,7 @@ def store():
 
 @pytest.mark.parametrize("filename, log_type", [
     ("access_common.txt", "access"), ("access_combined.txt", "access"),
+    ("access_combined_extended.txt", "access"),
     ("error_standard.txt", "error"), ("error_legacy.txt", "error"),
 ])
 def test_imports_supported_formats_with_file_and_line_provenance(store, filename, log_type):
@@ -40,6 +45,137 @@ def test_imports_supported_formats_with_file_and_line_provenance(store, filename
     assert {item.event.line_number for item in events} == {1, 2, 3}
     assert all(item.event.source_file == str(source.resolve()) for item in events)
     assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("filename,log_type", [
+    ("access_common.txt", "access"), ("access_combined.txt", "access"),
+    ("access_combined_extended.txt", "access"),
+    ("error_standard.txt", "error"), ("error_legacy.txt", "error"),
+])
+@pytest.mark.parametrize("extension", [".log.gz", ".tmp"])
+def test_gzip_formats_preserve_decompressed_evidence_and_compressed_source(
+    store, tmp_path, filename, log_type, extension,
+):
+    content = (FIXTURES / filename).read_bytes()
+    original = gzip.compress(content, mtime=0)
+    source = tmp_path / ("compressed" + extension)
+    source.write_bytes(original)
+
+    summary = ingest_file(source, log_type, store)
+
+    assert summary.lines_read == summary.imported_events == 3
+    assert summary.rejected_lines == summary.blank_lines == 0
+    assert summary.source_file == str(source.resolve())
+    for item in store.list_events():
+        event = item.event
+        assert event.raw_log == content.decode("utf-8").splitlines()[event.line_number - 1]
+        assert event.source_file == str(source.resolve())
+    assert source.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [source]
+
+
+def test_gzip_bom_crlf_invalid_encoding_and_oversized_lines_keep_physical_numbers(store, tmp_path):
+    content = b"\xef\xbb\xbf" + LINE + b"\r\n \r\nbad\xff\n" + b"x" * 300 + b"\n" + LINE
+    source = tmp_path / "mixed.log.gz"
+    source.write_bytes(gzip.compress(content, mtime=0))
+
+    summary = ingest_file(source, "access", store, max_line_bytes=len(LINE) + 3)
+
+    assert summary.lines_read == 5 and summary.imported_events == 2
+    assert summary.blank_lines == summary.encoding_error_lines == summary.oversized_lines == 1
+    assert summary.rejected_lines == 2
+    first, last = store.list_events()
+    assert first.event.line_number == 1 and last.event.line_number == 5
+    assert first.event.raw_log == "\ufeff" + LINE.decode()
+    assert first.event.source_ip == "192.0.2.10" and last.event.raw_log == LINE.decode()
+
+
+def test_concatenated_gzip_members_form_one_continuous_log_stream(store, tmp_path):
+    split = len(LINE) // 2
+    source = tmp_path / "rotated.log.gz"
+    source.write_bytes(
+        gzip.compress(LINE[:split], mtime=0)
+        + gzip.compress(LINE[split:] + b"\n" + LINE + b"\n", mtime=0)
+    )
+
+    summary = ingest_file(source, "access", store)
+
+    assert summary.lines_read == summary.imported_events == 2
+    assert [item.event.line_number for item in store.list_events()] == [1, 2]
+    assert all(item.event.raw_log == LINE.decode() for item in store.list_events())
+
+
+@pytest.mark.parametrize("damage", ["header", "deflate", "truncated", "checksum", "size", "trailing", "last_member"])
+def test_damaged_gzip_rolls_back_all_imported_evidence(store, tmp_path, damage):
+    previous = store.insert_event(parse_access_line(LINE.decode()))
+    original = gzip.compress((LINE + b"\n") * 100, mtime=0)
+    if damage == "header":
+        content = original[:2] + b"\x00" + original[3:]
+    elif damage == "deflate":
+        content = b"\x1f\x8b\x08\x00" + b"\x00" * 6 + b"\x07"
+    elif damage == "truncated":
+        content = original[:-1]
+    elif damage == "checksum":
+        content = original[:-8] + bytes([original[-8] ^ 1]) + original[-7:]
+    elif damage == "size":
+        content = original[:-4] + bytes([original[-4] ^ 1]) + original[-3:]
+    elif damage == "trailing":
+        content = original + b"not a gzip member"
+    else:
+        content = original + original[:-1]
+    source = tmp_path / "damaged.gz"
+    source.write_bytes(content)
+    before = list(store.connection.iterdump())
+
+    with pytest.raises(InvalidGzipError, match="damaged, incomplete"):
+        ingest_file(source, "access", store)
+
+    assert list(store.connection.iterdump()) == before
+    assert store.get_event(previous) is not None and not store.connection.in_transaction
+
+
+@pytest.mark.parametrize("ending", [b"", b"\n", b"\r\n"])
+def test_exact_gzip_decompressed_limit_is_accepted(store, tmp_path, ending):
+    content = LINE + ending
+    source = tmp_path / "exact.gz"
+    source.write_bytes(gzip.compress(content, mtime=0))
+    assert ingest_file(source, "access", store, max_decompressed_bytes=len(content)).imported_events == 1
+
+
+@pytest.mark.parametrize("tail", [b"\n", b"x" * 1000, b"\n" * 1000])
+def test_gzip_decompressed_limit_counts_blank_and_rejected_bytes_and_rolls_back(store, tmp_path, tail):
+    previous = store.insert_event(parse_access_line(LINE.decode()))
+    content = LINE + b"\n" + tail
+    source = tmp_path / "expanded.gz"
+    source.write_bytes(gzip.compress(content, mtime=0))
+    before = list(store.connection.iterdump())
+    with pytest.raises(DecompressedLogTooLargeError, match="decompressed size limit"):
+        ingest_file(source, "access", store, max_decompressed_bytes=len(LINE) + 1)
+    assert list(store.connection.iterdump()) == before
+    assert store.get_event(previous) is not None
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, None])
+def test_invalid_decompressed_limits_are_rejected_before_file_lookup(store, tmp_path, limit):
+    with pytest.raises(ValueError, match="max_decompressed_bytes"):
+        ingest_file(tmp_path / "missing.gz", "access", store, max_decompressed_bytes=limit)
+
+
+@pytest.mark.parametrize("content,log_type,lines", [(b"", "access", 0), (ERROR, "access", 1)])
+def test_gzip_with_no_matching_records_retains_rejection_summary(store, tmp_path, content, log_type, lines):
+    source = tmp_path / "wrong.gz"
+    source.write_bytes(gzip.compress(content, mtime=0))
+    with pytest.raises(NoApacheRecordsError) as failure:
+        ingest_file(source, log_type, store)
+    assert failure.value.summary.lines_read == lines
+    assert failure.value.summary.rejected_lines == lines
+    assert store.count_events() == 0
+
+
+def test_gzip_decompressed_limit_does_not_cap_plain_cli_files(store, tmp_path):
+    source = tmp_path / "plain.log.gz"
+    source.write_bytes(LINE + b"\n" + LINE)
+    assert ingest_file(source, "access", store, max_decompressed_bytes=1).imported_events == 2
 
 
 def test_mixed_file_counts_rejection_reasons_without_losing_line_numbers(store, tmp_path):
@@ -181,6 +317,10 @@ class GuardedReader:
     def fileno(self):
         return self.stream.fileno()
 
+    def peek(self, size):
+        assert size == 2, "Only the gzip header may be inspected before streaming"
+        return self.stream.peek(size)
+
     def readline(self, size=-1):
         assert 0 < size <= self.limit + 2, "Importer attempted an unbounded read"
         self.calls += 1
@@ -224,6 +364,26 @@ def test_large_file_and_oversized_line_use_only_bounded_reads(store, tmp_path, m
     assert readers[0].calls > summary.lines_read
     assert readers[0].stream.closed
     assert store.count_events() == 2000
+
+
+def test_large_gzip_and_oversized_record_use_bounded_decompressed_reads(store, tmp_path, monkeypatch):
+    from app import ingestion
+
+    source = tmp_path / "large.gz"
+    source.write_bytes(gzip.compress(b"x" * (1024 * 1024) + b"\n" + (LINE + b"\n") * 2000, mtime=0))
+    original = gzip.GzipFile
+    readers = []
+
+    def guarded_gzip(*args, **kwargs):
+        reader = GuardedReader(original(*args, **kwargs), len(LINE))
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(ingestion.gzip, "GzipFile", guarded_gzip)
+    summary = ingest_file(source, "access", store, max_line_bytes=len(LINE))
+    assert summary.imported_events == 2000 and summary.oversized_lines == 1
+    assert summary.lines_read == 2001 and readers[0].calls > summary.lines_read
+    assert readers[0].stream.closed and store.count_events() == 2000
 
 
 def test_read_failure_rolls_back_preceding_imported_lines(store, tmp_path, monkeypatch):

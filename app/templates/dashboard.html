@@ -111,8 +111,8 @@
     <div class="dialog-heading"><div><p class="eyebrow">ADD EVIDENCE</p><h2 id="import-title">Import Apache logs</h2></div>
       <button class="close-button" type="button" data-close="import-dialog" aria-label="Close import">×</button></div>
     <form id="import-form">
-      <p class="muted">Choose a plain UTF-8 log file, up to 10 MiB. Each import adds records and detects alerts.</p>
-      <label class="file-field">Apache log file<input id="upload-file" name="file" type="file" accept=".log,.txt,text/plain" required></label>
+      <p class="muted">Choose a UTF-8 log or gzip (.gz) file, up to 10 MiB. Gzip logs can expand to {{ max_decompressed_bytes // 1048576 }} MiB. Each import adds records and detects alerts.</p>
+      <label class="file-field">Apache log file<input id="upload-file" name="file" type="file" accept=".log,.txt,.gz,text/plain,application/gzip,application/x-gzip" required></label>
       <div class="form-grid">
         <label>Log format<select id="upload-type" name="log_type" required><option value="">Choose a format</option><option value="access">Apache access log</option><option value="error">Apache error log</option></select></label>
         <label>Error-log timezone<input id="upload-timezone" name="error_timezone" value="UTC" placeholder="UTC or -07:00" maxlength="16" disabled><span class="field-help">Access records use their logged offset.</span></label>

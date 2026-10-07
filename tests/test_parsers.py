@@ -15,6 +15,7 @@ ERROR = (
 
 @pytest.mark.parametrize("filename, log_type", [
     ("access_common.txt", "access"), ("access_combined.txt", "access"),
+    ("access_combined_extended.txt", "access"),
     ("error_standard.txt", "error"), ("error_legacy.txt", "error"),
 ])
 def test_synthetic_fixture_records(filename, log_type):
@@ -63,6 +64,57 @@ def test_combined_fields_and_positive_utc_offset():
     assert event.query_string == "q=%27test%27"
     assert event.referrer == "https://example.test/start"
     assert event.user_agent == "ExampleBrowser/1.0"
+
+
+def test_extended_combined_keeps_core_fields_and_full_raw_evidence():
+    line = (FIXTURES / "access_combined_extended.txt").read_text(encoding="utf-8").splitlines()[2]
+    event = parse_access_line(line, source_file="bot-tracking.log", line_number=3)
+
+    assert event is not None
+    assert event.log_format == "extended_combined"
+    assert event.timestamp == datetime(2026, 9, 24, 0, 12, 18, tzinfo=timezone.utc)
+    assert event.source_ip == "2001:db8::12" and event.username == "alex"
+    assert event.method == "GET" and event.path == event.request_target == "/.env"
+    assert event.protocol == "HTTP/2.0" and event.status_code == 404
+    assert event.response_bytes == 123 and event.referrer is None
+    assert event.user_agent == "ExampleBrowser/2.0"
+    assert event.raw_log == line
+    assert event.source_file == "bot-tracking.log" and event.line_number == 3
+
+
+@pytest.mark.parametrize("suffix", [
+    ' lang:"en-US,en;q=0.9" enc:"gzip, deflate, br" proto:HTTP/1.1 reqtime:1692',
+    ' chua:"\\"Chromium\\";v=\\"125\\"" chplat:"\\"Windows\\""',
+    ' lang:"" enc:"-"',
+    " proto:HTTP/2 reqtime:-",
+    '\ttrace.id:abc-1\tX_Custom:"value with spaces: colon"  ',
+    ' note:"literal\\\\backslash and \\x41"',
+    " status:500 source_ip:198.51.100.99 proto:HTTP/2",
+])
+def test_named_extensions_accept_quoted_and_bare_values_without_overriding_core_fields(suffix):
+    line = COMMON + ' "-" "ExampleBrowser/1.0"' + suffix
+    event = parse_access_line(line)
+
+    assert event is not None
+    assert event.log_format == "extended_combined"
+    assert event.source_ip == "192.0.2.10" and event.status_code == 200
+    assert event.protocol == "HTTP/1.1" and event.path == "/index.html"
+    assert event.raw_log == line and event.user_agent == "ExampleBrowser/1.0"
+
+
+@pytest.mark.parametrize("suffix", [
+    " unexpected trailing field", " reqtime:", ' lang:"unterminated',
+    ' lang:"ok"junk', ' lang:"ok"reqtime:12', " reqtime:12 unlabeled",
+    " =bad:value", " :value", " reqtime=12", ' "extra unlabeled field"',
+    ' lang:"ok"\nreqtime:12',
+])
+def test_malformed_combined_extensions_are_rejected(suffix):
+    assert parse_access_line(COMMON + ' "-" "ExampleBrowser/1.0"' + suffix) is None
+
+
+def test_named_extensions_require_complete_combined_fields():
+    assert parse_access_line(COMMON + ' lang:"en-US"') is None
+    assert parse_access_line(COMMON + ' "-" lang:"en-US"') is None
 
 
 def test_apache_escaping_preserves_raw_evidence():

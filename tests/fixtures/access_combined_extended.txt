@@ -1,0 +1,3 @@
+192.0.2.10 - - [24/Sep/2026:00:05:10 +0000] "GET / HTTP/1.1" 200 3449 "-" "ExampleBrowser/1.0" lang:"en-US,en;q=0.9" enc:"gzip, deflate, br" sfm:"navigate" sfs:"none" sfd:"document" sfu:"?1" chua:"-" chplat:"<script>DEMO</script>" uir:"1" proto:HTTP/1.1 reqtime:1692
+192.0.2.11 - - [24/Sep/2026:00:07:05 +0000] "POST /login HTTP/1.1" 200 3449 "-" "-" lang:"-" enc:"gzip" sfm:"-" sfs:"-" sfd:"-" sfu:"-" chua:"-" chplat:"-" uir:"-" proto:HTTP/1.1 reqtime:890
+2001:db8::12 - alex [24/Sep/2026:00:12:18 +0000] "GET /.env HTTP/2.0" 404 123 "-" "ExampleBrowser/2.0" lang:"" enc:"gzip" sfm:"-" sfs:"-" sfd:"-" sfu:"-" chua:"\"Chromium\";v=\"125\", \"Example Browser\";v=\"99\"" chplat:"\"Windows\"" uir:"-" proto:HTTP/2.0 reqtime:1742

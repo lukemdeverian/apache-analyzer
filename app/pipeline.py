@@ -8,7 +8,9 @@ from app.alerts import Alert
 from app.database import transaction
 from app.detection import DetectionEngine
 from app.events import ApacheLogType
-from app.ingestion import DEFAULT_MAX_LINE_BYTES, ImportSummary, ingest_file
+from app.ingestion import (
+    DEFAULT_MAX_DECOMPRESSED_BYTES, DEFAULT_MAX_LINE_BYTES, ImportSummary, ingest_file,
+)
 from app.storage import SQLiteStore
 
 DEFAULT_REQUEST_CORRELATION_SECONDS = 300
@@ -80,6 +82,7 @@ def detect_events(
 def analyze_file(
     path: str | Path, log_type: ApacheLogType, store: SQLiteStore, *,
     error_timezone: tzinfo = timezone.utc, max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
+    max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_BYTES,
     engine: DetectionEngine | None = None,
     request_correlation_seconds: int = DEFAULT_REQUEST_CORRELATION_SECONDS,
     source_label: str | None = None,
@@ -90,6 +93,7 @@ def analyze_file(
         imported = ingest_file(
             path, log_type, store, error_timezone=error_timezone,
             max_line_bytes=max_line_bytes, source_label=source_label,
+            max_decompressed_bytes=max_decompressed_bytes,
         )
         detection = detect_events(store, engine=engine, request_correlation_seconds=request_correlation_seconds)
     return AnalysisSummary(import_summary=imported, detection=detection)

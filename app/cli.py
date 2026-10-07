@@ -12,7 +12,9 @@ from flask.cli import with_appcontext
 from app.alerts import ALERT_STATUSES, AlertStatus
 from app.database import get_database
 from app.events import ApacheLogType
-from app.ingestion import DEFAULT_MAX_LINE_BYTES, MAX_LINE_BYTES, parse_error_timezone
+from app.ingestion import (
+    DEFAULT_MAX_DECOMPRESSED_BYTES, DEFAULT_MAX_LINE_BYTES, MAX_LINE_BYTES, parse_error_timezone,
+)
 from app.pipeline import DetectionSummary, analyze_file, detect_events
 from app.storage import SQLiteStore
 
@@ -49,18 +51,23 @@ def _echo_detection_summary(result: DetectionSummary) -> None:
     "--max-line-bytes", default=DEFAULT_MAX_LINE_BYTES, show_default=True,
     type=click.IntRange(1, MAX_LINE_BYTES), help="Maximum log record bytes, excluding its line ending.",
 )
+@click.option(
+    "--max-decompressed-bytes", default=DEFAULT_MAX_DECOMPRESSED_BYTES, show_default=True,
+    type=click.IntRange(1), help="Maximum total decompressed bytes for gzip logs.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Print the successful import summary as JSON.")
 @with_appcontext
 def ingest_command(
     log_file: Path, log_type: ApacheLogType, error_timezone: tzinfo,
-    max_line_bytes: int, json_output: bool,
+    max_line_bytes: int, max_decompressed_bytes: int, json_output: bool,
 ) -> None:
-    """Import Apache LOG_FILE and detect/correlate alerts atomically."""
+    """Import plain or gzip Apache LOG_FILE and detect/correlate alerts atomically."""
     try:
         store = SQLiteStore(get_database())
         result = analyze_file(
             log_file, log_type, store, error_timezone=error_timezone,
             max_line_bytes=max_line_bytes,
+            max_decompressed_bytes=max_decompressed_bytes,
         )
     except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         raise click.ClickException(

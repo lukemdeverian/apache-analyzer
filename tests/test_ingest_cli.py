@@ -1,3 +1,4 @@
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,10 @@ def initialize(app):
     assert result.exit_code == 0, result.output
 
 
-@pytest.mark.parametrize("filename, log_type", [("access_combined.txt", "access"), ("error_standard.txt", "error")])
+@pytest.mark.parametrize("filename, log_type", [
+    ("access_combined.txt", "access"), ("access_combined_extended.txt", "access"),
+    ("error_standard.txt", "error"),
+])
 def test_json_summary_and_persisted_cli_events(app, filename, log_type):
     initialize(app)
     source = FIXTURES / filename
@@ -39,6 +43,47 @@ def test_json_summary_and_persisted_cli_events(app, filename, log_type):
         assert SQLiteStore(connection).count_events(log_type=log_type) == 3
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("filename,log_type", [
+    ("access_combined_extended.txt", "access"), ("error_standard.txt", "error"),
+])
+def test_cli_accepts_gzip_without_extraction(app, tmp_path, filename, log_type):
+    initialize(app)
+    source = tmp_path / (filename + ".gz")
+    source.write_bytes(gzip.compress((FIXTURES / filename).read_bytes(), mtime=0))
+    result = app.test_cli_runner().invoke(args=["ingest", str(source), "--format", log_type, "--json"])
+    assert result.exit_code == 0, result.output
+    summary = json.loads(result.output)
+    assert summary["lines_read"] == summary["imported_events"] == 3
+    assert summary["rejected_lines"] == 0 and summary["source_file"] == str(source.resolve())
+
+
+def test_cli_reports_invalid_gzip_and_rolls_back(app, tmp_path):
+    initialize(app)
+    source = tmp_path / "truncated.gz"
+    source.write_bytes(gzip.compress((FIXTURES / "access_combined_extended.txt").read_bytes(), mtime=0)[:-1])
+    result = app.test_cli_runner().invoke(args=["ingest", str(source), "--format", "access"])
+    assert result.exit_code == 1 and "Cannot read gzip log" in result.output
+    assert "No events from this import were saved" in result.output
+    connection = connect_database(app.config["DATABASE_PATH"])
+    try:
+        assert SQLiteStore(connection).count_events() == SQLiteStore(connection).count_alerts() == 0
+    finally:
+        connection.close()
+
+
+def test_cli_decompressed_limit_can_be_changed(app, tmp_path):
+    initialize(app)
+    content = (FIXTURES / "access_combined_extended.txt").read_bytes()
+    source = tmp_path / "access.log.gz"
+    source.write_bytes(gzip.compress(content, mtime=0))
+    cli = app.test_cli_runner()
+    rejected = cli.invoke(args=["ingest", str(source), "--format", "access", "--max-decompressed-bytes", "1"])
+    assert rejected.exit_code == 1 and "decompressed size limit" in rejected.output
+    accepted = cli.invoke(args=["ingest", str(source), "--format", "access", "--max-decompressed-bytes", str(len(content)), "--json"])
+    assert accepted.exit_code == 0, accepted.output
+    assert json.loads(accepted.output)["imported_events"] == 3
 
 
 def test_human_summary_and_error_timezone_option(app):
@@ -65,6 +110,7 @@ def test_human_summary_and_error_timezone_option(app):
     ["--format", "access", "--error-timezone", "local"],
     ["--format", "access", "--max-line-bytes", "0"],
     ["--format", "access", "--max-line-bytes", "1048577"],
+    ["--format", "access", "--max-decompressed-bytes", "0"],
 ])
 def test_invalid_options_fail_before_opening_the_database(app, options):
     result = app.test_cli_runner().invoke(args=["ingest", str(FIXTURES / "access_common.txt"), *options])
@@ -133,5 +179,6 @@ def test_ingest_command_help_documents_required_format_and_limits(app):
     assert "[required]" in result.output
     assert "--error-timezone" in result.output
     assert "--max-line-bytes" in result.output
+    assert "--max-decompressed-bytes" in result.output
     assert "--json" in result.output
     assert not Path(app.config["DATABASE_PATH"]).exists()

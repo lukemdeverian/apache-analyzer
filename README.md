@@ -1,7 +1,8 @@
 # Apache Analyzer
 
 A local Apache log analyzer inspired by [Nightwatch](https://github.com/lukemdeverian/nightwatch).
-It accepts Apache access and error log files, stores evidence in SQLite, detects
+It accepts plain or gzip-compressed Apache access and error log files, stores
+evidence in SQLite, detects
 suspicious activity and server issues, and presents alerts in a local dashboard.
 It runs directly on Python without Docker or a database server.
 The implementation is written specifically for this repository, using
@@ -9,7 +10,8 @@ Nightwatch's separation of parsing, storage, detection, and presentation as a re
 
 ## Build complete: 10 of 10 increments
 
-- Explicit common/combined access and standard/legacy Apache error ingestion
+- Explicit common/combined access (including trailing named fields) and
+  standard/legacy Apache error ingestion
   through the streaming CLI or browser uploads capped at 10 MiB.
 - Preserved raw evidence, file labels, physical line numbers, and normalized
   UTC timestamps in versioned local SQLite storage.
@@ -85,7 +87,8 @@ Start the server and open <http://127.0.0.1:5000/> in a modern browser. The
 dashboard uses bundled HTML, CSS, and JavaScript; no Node.js installation,
 frontend build, or external assets are needed to run the application.
 
-1. Select **Import logs**, choose a plain UTF-8 Apache file, and explicitly
+1. Select **Import logs**, choose a UTF-8 Apache log or a gzip (`.gz`) file, and
+   explicitly
    select **Apache access log** or **Apache error log**. For error logs, enter
    the server's fixed UTC offset, such as `-07:00`, or leave `UTC`.
 2. Select **Import and analyze**. The summary shows imported records, blank and
@@ -107,9 +110,13 @@ evidence use 25-record pages; **Refresh** picks up changes made through the CLI.
 be opened directly using a URL such as `/#alerts/1`, including former merged IDs.
 
 Browser files are limited to 10 MiB, with an additional 64 KiB allowance for
-multipart request metadata. Each physical log line uses the CLI's default
-64 KiB limit; oversized lines are counted and skipped. Compressed files and
-custom Apache log layouts are not supported. Files without any supported
+multipart request metadata. For gzip, this limit applies to the compressed file;
+the decompressed content is limited to 100 MiB. Each physical log line uses
+the CLI's default
+64 KiB limit; oversized lines are counted and skipped. Combined access logs may
+include trailing named fields such as `lang:"en-US" proto:HTTP/1.1 reqtime:1692`.
+Other compression formats, archives, and other custom Apache layouts are not supported.
+Files without any supported
 records are rejected with a summary and leave the database unchanged.
 
 Uploads are copied to unique temporary files under `instance/uploads/` and
@@ -136,12 +143,36 @@ You can try the committed synthetic fixtures:
 ```
 
 Replace the fixture path with your Apache log file. File extensions do not affect
-parser selection. Common/combined access records use `--format access`; standard
+parser selection. Common/combined access records, including combined records
+with trailing named fields, use `--format access`; standard
 and legacy error records use `--format error`. Files are read as UTF-8 text, with
 LF or CRLF line endings, an optional initial UTF-8 signature, and an optional
 unterminated final line. The importer reads regular files and preserves their
 contents. Each stored event includes the resolved source path, its physical line
 number, and raw evidence. The initial UTF-8 signature is retained in raw evidence.
+
+Gzip-compressed logs work through the same command without manual extraction:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app ingest C:\logs\access.log.gz --format access --json
+.\.venv\Scripts\python.exe -m flask --app app ingest C:\logs\error.log.gz --format error --error-timezone=-07:00 --json
+```
+
+Compression is detected from the file's gzip header rather than its extension.
+The importer uses Python's streaming
+[`GzipFile`](https://docs.python.org/3/library/gzip.html#gzip.GzipFile) reader;
+it creates no extracted log file. Provenance records the compressed input's
+path or upload label, and line numbers refer to the decompressed log. Raw
+evidence contains the original decompressed text, including extra Apache fields.
+Concatenated gzip members are read as one continuous log stream.
+
+Gzip imports default to a 100 MiB decompressed limit (104857600 bytes), including
+line endings, blank lines, and rejected or oversized records. CLI callers can
+raise or lower it using `--max-decompressed-bytes`; Python callers can use
+`max_decompressed_bytes` with `ingest_file(...)` or `analyze_file(...)`. This
+total limit applies only to gzip. The existing per-record byte limit applies
+to decompressed lines. A damaged header, truncated stream, checksum failure,
+or expansion over the limit rejects the entire import and preserves earlier data.
 
 `--error-timezone` accepts `UTC` (the default) or a signed offset such as `-07:00`
 or `+05:30`. It applies that fixed offset to every error timestamp in the file.
@@ -637,6 +668,10 @@ returns 422 with `error.code: "no_apache_records"` and a `summary` containing
 rejection counts. Invalid form fields return 400, a missing upload header or
 foreign origin returns 403, oversized files/forms return 413, and a non-multipart
 body returns 415. Database failures retain the investigation API's 503 behavior.
+Gzip files use the same multipart fields and require no compression flag.
+Invalid or truncated gzip returns 422 with `error.code: "invalid_gzip"`;
+content over the 100 MiB decompressed limit returns 413 with
+`error.code: "decompressed_log_too_large"`. Both errors leave the database unchanged.
 
 Python callers can pass `source_label` to `ingest_file(...)` or
 `analyze_file(...)` to identify a temporary file's records without persisting
@@ -658,11 +693,24 @@ if event is not None:
 
 | Log type | Supported layouts | Parsed details |
 | --- | --- | --- |
-| `access` | Common and combined access formats | Logged host/IP, user, request, method, target, path, query, protocol, response status/body bytes, optional referrer/user-agent |
+| `access` | Common, combined, and combined with trailing named fields | Logged host/IP, user, request, method, target, path, query, protocol, response status/body bytes, optional referrer/user-agent |
 | `error` | Typical Apache 2.4 `[time] [module:level] [pid ...] [client ...] message` and legacy `[time] [level] [client ...] message` | Module, level, optional process/thread ID, client address/port, Apache error code, full message |
 
+Combined records may append whitespace-separated `name:"quoted value"` or
+`name:token` fields after the referrer and user-agent. For example, bot-tracking
+logs with `lang`, `enc`, `sfm`, `sfs`, `sfd`, `sfu`, `chua`, `chplat`, `uir`,
+`proto`, and `reqtime` fields are accepted. Names start with an ASCII letter
+and may contain letters, digits, periods, underscores, or hyphens. Quoted values
+can contain spaces and Apache escapes; bare values must be nonempty and contain
+no whitespace or double quotes. These records have `log_format` set to
+`extended_combined`. Extra fields remain in the full raw evidence and do not
+override core fields or add detection inputs. Incomplete quotes, unnamed
+trailing data, and named fields without both combined fields are rejected.
+Apache supports such custom suffixes through
+[`LogFormat`](https://httpd.apache.org/docs/2.4/mod/mod_log_config.html#logformat).
+
 In error records, process/thread IDs and the client block may be absent.
-Arbitrary custom `LogFormat`/`ErrorLogFormat` layouts, virtual-host prefixes,
+Other custom `LogFormat`/`ErrorLogFormat` layouts, virtual-host prefixes,
 and multiline messages are outside the supported formats. A server that emits
 these layouts is required: common/combined access syntax is shared by other
 HTTP servers, so a line alone cannot prove which server wrote it.

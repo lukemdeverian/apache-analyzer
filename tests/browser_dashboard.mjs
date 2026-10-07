@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { gzipSync } from "node:zlib";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const browserPath = process.env.BROWSER_PATH ||
@@ -65,10 +66,13 @@ const field = (selector, value) => evaluate(
 const submit = (selector) => evaluate("document.querySelector(" + JSON.stringify(selector) + ").requestSubmit()");
 
 async function importLog(text, logType, timezone = "UTC", filename = "browser-" + logType + ".log") {
+  const content = typeof text === "string" ? JSON.stringify(text) :
+    "Uint8Array.from(" + JSON.stringify([...text]) + ")";
   await click("#open-import");
   await evaluate(
     "(() => { const transfer = new DataTransfer(); transfer.items.add(new File([" +
-    JSON.stringify(text) + "], " + JSON.stringify(filename) + ", {type:'text/plain'})); " +
+    content + "], " + JSON.stringify(filename) + ", {type:" +
+    JSON.stringify(typeof text === "string" ? "text/plain" : "application/gzip") + "})); " +
     "document.getElementById('upload-file').files = transfer.files; })()",
   );
   await field("#upload-type", logType);
@@ -252,8 +256,9 @@ try {
   await command("Page.navigate", { url: demoUrl });
   await waitFor("document.getElementById('stat-events')?.textContent === '0'", "empty demo workspace");
   const expected = JSON.parse(readFileSync(join(root, "examples/expected.json"), "utf8"));
+  assert.match(await evaluate("document.getElementById('upload-file').accept"), /\.gz/);
   for (const file of expected.files) {
-    await importLog(readFileSync(join(root, "examples", file.name), "utf8"), file.log_type, "UTC", file.name);
+    await importLog(gzipSync(readFileSync(join(root, "examples", file.name))), file.log_type, "UTC", file.name + ".gz");
     assert.match(await evaluate("document.getElementById('import-message').textContent"),
       new RegExp("Imported " + file.imported_events + " events"));
     await click("#import-dialog [data-close]");
@@ -275,7 +280,7 @@ try {
       "demo evidence page " + range);
   }
   await click("#evidence-rows button");
-  await waitFor("document.getElementById('event-metadata').textContent.includes('/demo_access.txt')",
+  await waitFor("document.getElementById('event-metadata').textContent.includes('/demo_access.txt.gz')",
     "demo upload provenance");
   assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /Line number143/);
   await click("#event-dialog [data-close]");
@@ -285,8 +290,14 @@ try {
   await click("#alert-dialog [data-close]");
   await click('[data-view="overview"]');
   await waitFor("document.getElementById('stat-open').textContent === '10'", "demo triage statistics");
+  const damaged = gzipSync(readFileSync(join(root, "tests/fixtures/access_combined_extended.txt"))).subarray(0, -1);
+  await importLog(damaged, "access", "UTC", "damaged.log.gz");
+  assert.match(await evaluate("document.getElementById('import-message').textContent"), /Cannot read gzip log/);
+  await click("#import-dialog [data-close]");
+  assert.equal(await evaluate("document.getElementById('stat-events').textContent"), "195");
+  assert.equal(await evaluate("document.getElementById('stat-open').textContent"), "10");
   assert.deepEqual(exceptions, [], "Unexpected browser JavaScript errors during the public demo.");
-  console.log("PASS published demo: 195 events, 11 rules, all 120 burst evidence records, and analyst triage");
+  console.log("PASS gzip demo: 195 events, 11 rules, all 120 burst evidence records, triage, and damaged gzip feedback");
   console.log("All browser checks passed.");
 } catch (error) {
   console.error(error);

@@ -1,4 +1,4 @@
-"""Pure parsers for Apache common/combined access and standard error records."""
+"""Pure parsers for Apache access layouts and standard error records."""
 
 import re
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -14,12 +14,14 @@ _MONTHS = {
     )
 }
 _QUOTED_FIELD = r'(?:[^"\\\r\n]|\\[^\r\n])*'
+_NAMED_FIELD = rf'[A-Za-z][A-Za-z0-9_.-]*:(?:"{_QUOTED_FIELD}"|[^ \t"\r\n]+)'
 _ACCESS = re.compile(
     r"[ \t]*(?P<host>[^ \t\r\n]+)[ \t]+(?P<ident>[^ \t\r\n]+)"
     r"[ \t]+(?P<user>[^ \t\r\n]+)[ \t]+\[(?P<time>[^\]\r\n]+)\]"
     rf'[ \t]+"(?P<request>{_QUOTED_FIELD})"'
     r"[ \t]+(?P<status>[0-9]{3})[ \t]+(?P<bytes>[0-9]+|-)"
-    rf'(?:[ \t]+"(?P<referrer>{_QUOTED_FIELD})"[ \t]+"(?P<agent>{_QUOTED_FIELD})")?'
+    rf'(?:[ \t]+"(?P<referrer>{_QUOTED_FIELD})"[ \t]+"(?P<agent>{_QUOTED_FIELD})"'
+    rf'(?P<extensions>(?:[ \t]+{_NAMED_FIELD})+)?)?'
     r"[ \t]*"
 )
 _ACCESS_TIME = re.compile(
@@ -141,10 +143,12 @@ def _split_target(target: str, method: str) -> tuple[str | None, str | None]:
 def parse_access_line(
     line: str, *, source_file: str | None = None, line_number: int | None = None,
 ) -> ApacheEvent | None:
-    """Parse a common/combined line; return None for malformed log records.
+    """Parse common, combined, or combined with trailing named fields.
 
     Missing or malformed request lines remain valid evidence with unpopulated
     request fields. No hostname lookups or URL decoding are performed.
+    Extensions use name:"quoted value" or name:token syntax and remain in
+    raw_log; they never replace the parsed core fields.
     """
     raw_log = _prepare_line(line, line_number)
     match = _ACCESS.fullmatch(raw_log) if raw_log is not None else None
@@ -167,7 +171,10 @@ def parse_access_line(
             path, query = _split_target(target, method)
         return ApacheEvent(
             log_type="access",
-            log_format="combined" if match["agent"] is not None else "common",
+            log_format=(
+                "extended_combined" if match["extensions"] is not None
+                else "combined" if match["agent"] is not None else "common"
+            ),
             timestamp=timestamp, raw_log=raw_log,
             source_file=source_file, line_number=line_number,
             source_host=host, source_ip=_ip_or_none(host),

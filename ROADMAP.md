@@ -6,8 +6,10 @@ continue with the next increment when the user asks to proceed.
 
 ## Scope
 
-- Accept Apache access and error log files through explicit file ingestion.
-- Support common and combined access formats and documented standard error formats.
+- Accept plain and gzip-compressed Apache access and error log files through
+  explicit file ingestion, with bounded decompression.
+- Support common and combined access formats, combined logs with trailing named
+  fields, and documented standard error formats.
 - Preserve raw evidence, parsed timestamps, source files, and line numbers.
 - Use Python, Flask, SQLite, and a small HTML/CSS/JavaScript dashboard.
 - Run locally without Docker, PostgreSQL, SSH log ingestion, or network telemetry ingestion.

@@ -2,6 +2,7 @@
 
 from flask import Blueprint, Flask, Response, render_template
 
+from app.ingestion import DEFAULT_MAX_DECOMPRESSED_BYTES
 from app.uploads import MAX_UPLOAD_BYTES
 
 dashboard = Blueprint("dashboard", __name__)
@@ -9,7 +10,10 @@ dashboard = Blueprint("dashboard", __name__)
 
 @dashboard.get("/")
 def index() -> str:
-    return render_template("dashboard.html", max_upload_bytes=MAX_UPLOAD_BYTES)
+    return render_template(
+        "dashboard.html", max_upload_bytes=MAX_UPLOAD_BYTES,
+        max_decompressed_bytes=DEFAULT_MAX_DECOMPRESSED_BYTES,
+    )
 
 
 def init_app(app: Flask) -> None:

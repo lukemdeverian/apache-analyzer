@@ -120,8 +120,9 @@ node tests\browser_dashboard.mjs
 It uses its own server, temporary databases, and temporary browser profile.
 It verifies browser uploads, filters, pagination, literal script evidence,
 status updates, error feedback, catalog recovery, and mobile layout. It then
-loads the published demo into a second empty database and reviews all 120
-burst records, their provenance, and a saved analyst decision. No existing
+uploads gzip-compressed copies of the published demo into a second empty database
+and reviews all 120 burst records, their compressed-file provenance, and a saved
+analyst decision. It also checks damaged-gzip feedback. No existing
 application data or browser profile is used.
 
 The default browser is Microsoft Edge on Windows. Set `BROWSER_PATH` for
@@ -138,10 +139,12 @@ node tests\browser_dashboard.mjs
 | Symptom | Check |
 | --- | --- |
 | Database schema is missing or incompatible | Run init-db in the terminal using the intended DATABASE_PATH. Owned version 1 databases upgrade in place; unrelated or future schemas are refused. |
-| No supported Apache records | Check access/error selection, plain UTF-8 content, and the supported common/combined or standard/legacy layouts. |
+| No supported Apache records | Check access/error selection, UTF-8 content (plain or gzip-compressed), and the supported common/combined or standard/legacy layouts. Combined access logs also accept trailing `name:"value"` or `name:token` fields; other custom layouts remain unsupported. |
 | Demo counts differ | Use a fresh database, import each file once with default rules, choose UTC for error timestamps, and clear filters. |
 | CLI changes are missing from the dashboard | Select Refresh; confirm both processes use the same database path. |
 | Browser file is too large | Use the streaming CLI for files over 10 MiB. Both paths rescan stored history, so scan time grows with the database. |
+| Gzip log exceeds its decompressed limit | Browser gzip uploads can expand to 100 MiB. For larger local gzip logs, use the CLI with --max-decompressed-bytes set to the desired positive byte limit. |
+| Cannot read gzip log | Obtain a complete, valid gzip file. Truncation, corruption, or checksum errors reject the entire import and preserve previously stored data. |
 | Port already in use | Choose an unused APP_PORT and use that port in the browser and API URLs. |
 
 Closing the demo terminal restores your ordinary environment for later runs.

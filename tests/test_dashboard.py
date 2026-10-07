@@ -1,3 +1,4 @@
+import gzip
 import io
 import sqlite3
 from pathlib import Path
@@ -44,6 +45,8 @@ def test_dashboard_and_assets_work_without_initializing_storage(tmp_path):
     html = response.get_data(as_text=True)
     assert "<title>Apache Analyzer</title>" in html
     assert 'id="import-dialog"' in html and 'id="raw-log"' in html
+    assert ".gz,text/plain,application/gzip" in html
+    assert "Gzip logs can expand to 100 MiB." in html
     assert 'data-max-upload-bytes="10485760"' in html
     assert "script-src 'self'" in response.headers["Content-Security-Policy"]
     assert "object-src 'none'" in response.headers["Content-Security-Policy"]
@@ -77,6 +80,112 @@ def test_browser_import_persists_detection_and_provenance_without_retaining_uplo
     evidence = client.get(f"/api/alerts/{alert.id}/events").json["items"]
     assert evidence[0]["source_file"] == summary["source_file"]
     assert client.get("/api/stats").json["events"]["total"] == 1
+    no_temporary_files(app)
+
+
+def test_extended_combined_upload_detects_requests_and_preserves_header_evidence(workspace):
+    app, store = workspace
+    client = app.test_client()
+    content = (Path(__file__).with_name("fixtures") / "access_combined_extended.txt").read_bytes()
+    response = upload(client, content, filename="bot-tracking-access.log")
+
+    assert response.status_code == 201
+    summary = response.json["summary"]
+    assert summary["lines_read"] == summary["imported_events"] == 3
+    assert summary["rejected_lines"] == summary["blank_lines"] == 0
+    assert summary["detection"]["alerts_created"] == 1
+    assert store.count_events() == 3
+    # The script text in a custom header is evidence, not a request-signature alert.
+    alert, = store.list_alerts()
+    assert alert.alert.rule_id == "APACHE-SENSITIVE-FILE"
+    assert alert.alert.source_ip == "2001:db8::12" and alert.event_count == 1
+    evidence, = client.get(f"/api/alerts/{alert.id}/events").json["items"]
+    assert evidence["log_format"] == "extended_combined"
+    assert evidence["line_number"] == 3 and evidence["source_file"] == summary["source_file"]
+    assert evidence["raw_log"] == content.decode("utf-8").splitlines()[2]
+    first = client.get("/api/events/1").json["item"]
+    assert first["raw_log"] == content.decode("utf-8").splitlines()[0]
+    assert first["user_agent"] == "ExampleBrowser/1.0" and first["path"] == "/"
+    no_temporary_files(app)
+
+
+@pytest.mark.parametrize("log_type,content,count,rule,timezone", [
+    ("access", ACCESS, 1, "APACHE-SENSITIVE-FILE", "UTC"),
+    ("access", (Path(__file__).with_name("fixtures") / "access_combined_extended.txt").read_bytes(),
+     3, "APACHE-SENSITIVE-FILE", "UTC"),
+    ("error", ERROR * 10, 10, "APACHE-ERROR-BURST", "-07:00"),
+])
+def test_gzip_uploads_parse_detect_and_preserve_compressed_provenance(
+    workspace, log_type, content, count, rule, timezone,
+):
+    app, store = workspace
+    client = app.test_client()
+    response = upload(client, gzip.compress(content, mtime=0), filename=log_type + ".log.gz",
+                      log_type=log_type, extra={"error_timezone": timezone})
+    assert response.status_code == 201
+    summary = response.json["summary"]
+    assert summary["lines_read"] == summary["imported_events"] == count
+    assert summary["rejected_lines"] == 0 and summary["detection"]["alerts_created"] == 1
+    assert summary["source_file"].endswith("/" + log_type + ".log.gz")
+    assert store.count_events() == count
+    alert, = store.list_alerts()
+    assert alert.alert.rule_id == rule
+    for item in store.list_events():
+        assert item.event.source_file == summary["source_file"]
+        assert item.event.raw_log == content.decode().splitlines()[item.event.line_number - 1]
+    if log_type == "error":
+        assert store.list_events()[0].event.assumed_timezone == "UTC-07:00"
+    no_temporary_files(app)
+
+
+@pytest.mark.parametrize("damage", ["checksum", "truncated", "deflate", "last_member"])
+def test_invalid_gzip_upload_returns_actionable_error_without_partial_writes(workspace, damage):
+    app, store = workspace
+    client = app.test_client()
+    assert upload(client).status_code == 201
+    before = list(store.connection.iterdump())
+    compressed = gzip.compress(ACCESS * 100, mtime=0)
+    if damage == "checksum":
+        compressed = compressed[:-8] + bytes([compressed[-8] ^ 1]) + compressed[-7:]
+    elif damage == "truncated":
+        compressed = compressed[:-1]
+    elif damage == "last_member":
+        compressed += compressed[:-1]
+    else:
+        compressed = b"\x1f\x8b\x08\x00" + b"\x00" * 6 + b"\x07"
+    response = upload(client, compressed, filename="damaged.log.gz")
+    assert response.status_code == 422 and response.json["error"]["code"] == "invalid_gzip"
+    assert "damaged, incomplete" in response.json["error"]["message"]
+    assert list(store.connection.iterdump()) == before
+    no_temporary_files(app)
+
+
+def test_gzip_upload_expansion_limit_returns_413_and_rolls_back(workspace, monkeypatch):
+    from app import pipeline
+
+    app, store = workspace
+    client = app.test_client()
+    assert upload(client).status_code == 201
+    before = list(store.connection.iterdump())
+    original = pipeline.ingest_file
+
+    def smaller_limit(*args, **kwargs):
+        return original(*args, **{**kwargs, "max_decompressed_bytes": len(ACCESS)})
+
+    monkeypatch.setattr(pipeline, "ingest_file", smaller_limit)
+    response = upload(client, gzip.compress(ACCESS + b"\n", mtime=0), filename="large.log.gz")
+    assert response.status_code == 413
+    assert response.json["error"]["code"] == "decompressed_log_too_large"
+    assert list(store.connection.iterdump()) == before
+    no_temporary_files(app)
+
+
+def test_gzip_wrong_log_type_returns_rejection_summary_without_writes(workspace):
+    app, store = workspace
+    response = upload(app.test_client(), gzip.compress(ERROR, mtime=0), filename="error.log.gz")
+    assert response.status_code == 422 and response.json["error"]["code"] == "no_apache_records"
+    assert response.json["summary"]["lines_read"] == response.json["summary"]["rejected_lines"] == 1
+    assert store.count_events() == store.count_alerts() == 0
     no_temporary_files(app)
 
 

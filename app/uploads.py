@@ -12,7 +12,9 @@ from werkzeug.exceptions import RequestEntityTooLarge, UnsupportedMediaType
 from werkzeug.utils import secure_filename
 
 from app.api import APIError, _invalid, _query, _store, api
-from app.ingestion import NoApacheRecordsError, parse_error_timezone
+from app.ingestion import (
+    DecompressedLogTooLargeError, InvalidGzipError, NoApacheRecordsError, parse_error_timezone,
+)
 from app.pipeline import analyze_file
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -79,6 +81,14 @@ def import_file() -> tuple[dict, int]:
         with _temporary_upload(upload) as path:
             try:
                 result = analyze_file(path, log_type, store, error_timezone=error_timezone, source_label=source_label)
+            except InvalidGzipError as exc:
+                raise APIError(
+                    422, "invalid_gzip", f"{exc} No events or alert changes were saved."
+                ) from exc
+            except DecompressedLogTooLargeError as exc:
+                raise APIError(
+                    413, "decompressed_log_too_large", f"{exc} No events or alert changes were saved."
+                ) from exc
             except NoApacheRecordsError as exc:
                 return {
                     "error": {
