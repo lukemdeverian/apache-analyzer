@@ -1,51 +1,29 @@
 # Apache Analyzer
 
 A local Apache log analyzer inspired by [Nightwatch](https://github.com/lukemdeverian/nightwatch).
-It is being built in 10 reviewable increments, with a pause after each increment
-so you can commit the changes yourself. See [ROADMAP.md](ROADMAP.md) for the sequence.
-
-The target application accepts Apache access and error log files, stores evidence
-in SQLite, detects suspicious Apache activity, and presents alerts in a local
-Flask dashboard. It runs directly on Python without Docker or a database server.
-The initial implementation is written specifically for this repository, using
+It accepts Apache access and error log files, stores evidence in SQLite, detects
+suspicious activity and server issues, and presents alerts in a local dashboard.
+It runs directly on Python without Docker or a database server.
+The implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Current progress: increment 9 of 10
+## Build complete: 10 of 10 increments
 
-Implemented:
+- Explicit common/combined access and standard/legacy Apache error ingestion
+  through the streaming CLI or browser uploads capped at 10 MiB.
+- Preserved raw evidence, file labels, physical line numbers, and normalized
+  UTC timestamps in versioned local SQLite storage.
+- Eleven detection rules, persistent correlation, complete evidence links,
+  usable merged alert IDs, and four analyst statuses.
+- Dashboard overview, filters, paginated alerts/events, raw record inspection,
+  and JSON investigation APIs.
+- Synthetic demo and benign files, an expected-results manifest, automated
+  workflow regression checks, and an optional real-browser check.
 
-- Flask application factory and a JSON health endpoint.
-- Environment configuration with validation and local defaults.
-- Development entry point and configuration example.
-- Isolated tests for startup settings and application health.
-- Apache common/combined access and standard/legacy error parsers.
-- Normalized UTC event records with original evidence and optional file/line provenance.
-- Synthetic fixtures covering escaped fields, IPv6, missing values, and malformed records.
-- SQLite event and alert storage with versioned schema initialization.
-- Atomic alert/evidence writes, foreign-key protection, and indexed query helpers.
-- Persistence, filtering, transaction rollback, and database CLI tests.
-- Streaming Apache file ingestion with an explicit access/error format selection.
-- Human-readable and JSON import summaries, bounded line reads, and rejection counts.
-- Atomic file imports with file/line provenance and optional error-log UTC offsets.
-- Four behavioral detection rules with configurable thresholds and rolling time windows.
-- Read-only findings containing rule details, logged IP, timestamps, and full evidence IDs.
-- Detection checks for thresholds, boundary times, benign traffic, and out-of-order imports.
-- Five request signatures for traversal, SQL injection, XSS, sensitive files, and unusual methods.
-- Server-wide windows for HTTP 5xx responses and severe Apache error-log records.
-- Bounded inspection decoding, preserved original evidence, and configurable expected HTTP methods.
-- Automatic detection and persistent alert correlation during CLI file imports.
-- Replay deduplication, backfill handling, complete evidence links, and atomic pipeline rollback.
-- Analyst status commands, preserved merged-alert references, and a version 1-to-2 schema upgrade.
-- Paginated JSON APIs for events, alerts, chronological evidence, and analyst status changes.
-- Default rule catalog and database statistics with source-IP and date filters.
-- API validation, JSON error responses, consistent read snapshots, and atomic status updates.
-- Local dashboard with overview charts, filters, paginated lists, and alert/event details.
-- Browser imports with explicit Apache format selection, size limits, rejection counts, and atomic analysis.
-- Literal raw-evidence rendering, analyst status controls, responsive layout, and real-browser checks.
-
-File ingestion, detection/correlation, and analyst status updates are available
-through the dashboard, CLI, and Python. Investigation APIs are also available
-over HTTP. Demo logs and the final workflow guide are planned for increment 10.
+See [ROADMAP.md](ROADMAP.md) for the completed sequence,
+[examples](examples/README.md) for the demo files,
+[the catalog](docs/DETECTIONS.md) for rule behavior, and
+[the verification guide](docs/VERIFICATION.md) for an isolated walkthrough.
 The dashboard HTML, `GET /health`, and `GET /api/rules` load without opening a
 database; dashboard data requests require an initialized schema.
 
@@ -56,7 +34,7 @@ Use Python 3.11 or newer. From this directory in PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-Copy-Item .env.example .env
+if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe -m flask --app app init-db
 .\.venv\Scripts\python.exe run.py
 ```
@@ -69,7 +47,8 @@ at <http://127.0.0.1:5000/health>:
 ```
 
 For macOS or Linux, replace the virtual environment executable with
-`.venv/bin/python` and copy the configuration using `cp .env.example .env`.
+`.venv/bin/python` and create the configuration if absent using
+`[ -f .env ] || cp .env.example .env`.
 For running without development tools, install `requirements.txt` instead.
 
 If your Python installation does not include pip, the equivalent setup with uv is:
@@ -77,7 +56,7 @@ If your Python installation does not include pip, the equivalent setup with uv i
 ```powershell
 uv venv .venv
 uv pip install --python .\.venv\Scripts\python.exe -r requirements-dev.txt
-Copy-Item .env.example .env
+if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe -m flask --app app init-db
 .\.venv\Scripts\python.exe run.py
 ```
@@ -297,6 +276,10 @@ transaction. Raw `ingest_file(...)` remains an evidence-only helper; the CLI use
 `analyze_file(...)` to import and run the persistent detection pipeline together.
 
 ## Apache detections
+
+The [standalone catalog](docs/DETECTIONS.md) includes per-rule review context
+and demo targets. [Demo evidence ranges](examples/README.md) and the
+[expected-results manifest](examples/expected.json) make the defaults reproducible.
 
 The detector scans stored Apache access and error records and returns findings
 for eleven rule types. These four behavioral thresholds apply to one logged IP
@@ -722,9 +705,13 @@ original escaping and whitespace, with only the final line ending removed.
 The tests use in-memory databases and temporary paths and do not need a running
 server, existing logs, or an existing database. Local configuration, environments,
 databases, and imported logs are excluded from version control.
+The [workflow guide](docs/VERIFICATION.md) describes the checks and expected
+demo results. The committed demo produces 195 events and 11 alerts in a fresh
+database; the benign samples produce 13 events and zero alerts.
 
 An optional browser check exercises imports, filters, pagination, status saves,
-raw evidence, rejection summaries, and mobile layout in a real Chromium browser:
+raw evidence, rejection summaries, mobile layout, and the published demo in a
+real Chromium browser:
 
 ```powershell
 node tests\browser_dashboard.mjs
@@ -734,6 +721,19 @@ This check requires Node.js 22 or newer and defaults to Microsoft Edge on
 Windows. Set `BROWSER_PATH` to another Chromium browser executable and `PYTHON`
 to another Python executable if needed. `APACHE_BROWSER_DEBUG_PORT` optionally
 selects a free debugging port, such as `9224`, instead of an automatic port.
-It starts its own server on an available
-local port with a temporary database and browser profile, then removes the test
+It starts its own servers on available local ports with temporary databases
+and a browser profile, then removes the test
 data. It does not use `.env`, the running application, or existing imported logs.
+
+## Project layout
+
+| Path | Purpose |
+| --- | --- |
+| `run.py`, `app/__init__.py`, `app/config.py` | Local startup and configuration |
+| `app/parsers.py`, `app/events.py` | Apache parsing and normalized evidence |
+| `app/ingestion.py`, `app/cli.py`, `app/uploads.py` | Explicit file intake and import summaries |
+| `app/detection.py`, `app/signatures.py`, `app/pipeline.py` | Rules and atomic import/detection correlation |
+| `app/database.py`, `app/schema.sql`, `app/storage.py`, `app/alerts.py` | SQLite schema, evidence links, merges, and analyst decisions |
+| `app/api.py`, `app/dashboard.py`, `app/templates/`, `app/static/` | Investigation API and dashboard |
+| `examples/`, `docs/` | Synthetic data, catalog, and verification walkthrough |
+| `tests/` | Parser, storage, detection, ingestion, API, workflow, and browser checks |

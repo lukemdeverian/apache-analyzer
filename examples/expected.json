@@ -1,0 +1,142 @@
+{
+  "description": "Fresh database, built-in defaults, each demo file imported once, error timezone UTC.",
+  "files": [
+    {
+      "name": "demo_access.txt",
+      "log_type": "access",
+      "lines_read": 187,
+      "imported_events": 185,
+      "blank_lines": 1,
+      "malformed_lines": 1
+    },
+    {
+      "name": "demo_error.txt",
+      "log_type": "error",
+      "lines_read": 12,
+      "imported_events": 10,
+      "blank_lines": 1,
+      "malformed_lines": 1
+    }
+  ],
+  "events": 195,
+  "alerts": 11,
+  "distinct_source_ips": 29,
+  "alerts_by_severity": {
+    "low": 0,
+    "medium": 5,
+    "high": 6,
+    "critical": 0
+  },
+  "rules": [
+    {
+      "rule_id": "APACHE-PATH-ENUMERATION",
+      "event_count": 10,
+      "source_ip": "192.0.2.10",
+      "file": "demo_access.txt",
+      "first_line": 3,
+      "last_line": 12,
+      "first_seen": "2026-10-06T09:00:00.000000Z",
+      "last_seen": "2026-10-06T09:00:09.000000Z"
+    },
+    {
+      "rule_id": "APACHE-HTTP-ERRORS",
+      "event_count": 20,
+      "source_ip": "192.0.2.20",
+      "file": "demo_access.txt",
+      "first_line": 13,
+      "last_line": 32,
+      "first_seen": "2026-10-06T09:01:00.000000Z",
+      "last_seen": "2026-10-06T09:01:19.000000Z"
+    },
+    {
+      "rule_id": "APACHE-AUTH-FAILURES",
+      "event_count": 10,
+      "source_ip": "192.0.2.30",
+      "file": "demo_access.txt",
+      "first_line": 33,
+      "last_line": 42,
+      "first_seen": "2026-10-06T09:02:00.000000Z",
+      "last_seen": "2026-10-06T09:02:09.000000Z"
+    },
+    {
+      "rule_id": "APACHE-REQUEST-BURST",
+      "event_count": 120,
+      "source_ip": "192.0.2.40",
+      "file": "demo_access.txt",
+      "first_line": 43,
+      "last_line": 162,
+      "first_seen": "2026-10-06T09:03:00.000000Z",
+      "last_seen": "2026-10-06T09:03:59.000000Z"
+    },
+    {
+      "rule_id": "APACHE-TRAVERSAL",
+      "event_count": 1,
+      "source_ip": "192.0.2.50",
+      "file": "demo_access.txt",
+      "first_line": 163,
+      "last_line": 163,
+      "first_seen": "2026-10-06T09:04:00.000000Z",
+      "last_seen": "2026-10-06T09:04:00.000000Z"
+    },
+    {
+      "rule_id": "APACHE-SQL-INJECTION",
+      "event_count": 1,
+      "source_ip": "192.0.2.51",
+      "file": "demo_access.txt",
+      "first_line": 164,
+      "last_line": 164,
+      "first_seen": "2026-10-06T09:04:05.000000Z",
+      "last_seen": "2026-10-06T09:04:05.000000Z"
+    },
+    {
+      "rule_id": "APACHE-XSS",
+      "event_count": 1,
+      "source_ip": "2001:db8::52",
+      "file": "demo_access.txt",
+      "first_line": 165,
+      "last_line": 165,
+      "first_seen": "2026-10-06T09:04:10.000000Z",
+      "last_seen": "2026-10-06T09:04:10.000000Z"
+    },
+    {
+      "rule_id": "APACHE-SENSITIVE-FILE",
+      "event_count": 1,
+      "source_ip": "192.0.2.53",
+      "file": "demo_access.txt",
+      "first_line": 166,
+      "last_line": 166,
+      "first_seen": "2026-10-06T09:04:15.000000Z",
+      "last_seen": "2026-10-06T09:04:15.000000Z"
+    },
+    {
+      "rule_id": "APACHE-UNUSUAL-METHOD",
+      "event_count": 1,
+      "source_ip": "192.0.2.54",
+      "file": "demo_access.txt",
+      "first_line": 167,
+      "last_line": 167,
+      "first_seen": "2026-10-06T09:04:20.000000Z",
+      "last_seen": "2026-10-06T09:04:20.000000Z"
+    },
+    {
+      "rule_id": "APACHE-SERVER-ERRORS",
+      "event_count": 20,
+      "source_ip": null,
+      "file": "demo_access.txt",
+      "first_line": 168,
+      "last_line": 187,
+      "first_seen": "2026-10-06T09:05:00.000000Z",
+      "last_seen": "2026-10-06T09:05:19.000000Z"
+    },
+    {
+      "rule_id": "APACHE-ERROR-BURST",
+      "event_count": 10,
+      "source_ip": null,
+      "file": "demo_error.txt",
+      "first_line": 3,
+      "last_line": 12,
+      "first_seen": "2026-10-06T09:06:00.000000Z",
+      "last_seen": "2026-10-06T09:06:09.000000Z"
+    }
+  ]
+}

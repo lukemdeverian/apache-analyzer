@@ -1,0 +1,12 @@
+DEMO: intentionally malformed error record
+
+[Tue Oct 06 09:06:00.000000 2026] [core:error] [pid 1234:tid 5678] [client 192.0.2.10:43210] AH99900: Synthetic request handler failure
+[Tue Oct 06 09:06:01.000000 2026] [proxy:error] [pid 1234:tid 5678] AH99901: Synthetic upstream connection failure
+[Tue Oct 06 09:06:02.000000 2026] [core:crit] [pid 1234:tid 5678] AH99902: Synthetic resource exhaustion
+[Tue Oct 06 09:06:03.000000 2026] [authz_core:error] [pid 1234:tid 5678] [client [2001:db8::52]:43211] AH99903: Synthetic authorization module failure
+[Tue Oct 06 09:06:04.000000 2026] [mpm_event:alert] [pid 1234:tid 5678] AH99904: Synthetic worker alert
+[Tue Oct 06 09:06:05.000000 2026] [core:error] [pid 1234:tid 5678] AH99905: Synthetic handler failure
+[Tue Oct 06 09:06:06.000000 2026] [proxy:error] [pid 1234:tid 5678] AH99906: Synthetic unavailable upstream
+[Tue Oct 06 09:06:07.000000 2026] [mpm_event:emerg] [pid 1234:tid 5678] AH99907: Synthetic worker emergency
+[Tue Oct 06 09:06:08.000000 2026] [core:error] [pid 1234:tid 5678] AH99908: Synthetic configuration failure
+[Tue Oct 06 09:06:09.000000 2026] [core:error] [pid 1234:tid 5678] AH99909: Synthetic final failure

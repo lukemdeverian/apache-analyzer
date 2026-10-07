@@ -1,0 +1,4 @@
+[Tue Oct 06 08:30:00.000000 2026] [core:notice] AH99990: Synthetic startup notice
+[Tue Oct 06 08:30:10.000000 2026] [core:info] [pid 1234] AH99991: Synthetic informational message
+[Tue Oct 06 08:30:20.000000 2026] [ssl:warn] [client 203.0.113.10:43210] AH99992: Synthetic warning
+[Tue Oct 06 08:30:30.000000 2026] [core:debug] AH99993: Synthetic debug message

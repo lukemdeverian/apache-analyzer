@@ -1,4 +1,4 @@
-"""Alert evidence values used by storage and the future detection pipeline."""
+"""Alert evidence values and analyst statuses used by storage and detection."""
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone

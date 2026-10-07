@@ -28,7 +28,7 @@ continue with the next increment when the user asks to proceed.
 | 7 | Detection pipeline integration, alert correlation, evidence linking, analyst statuses | `feat: correlate Apache detections and manage alert status` | Complete |
 | 8 | Paginated APIs for events, alerts, evidence, rules, statistics, and status updates | `feat: expose Apache investigation APIs` | Complete |
 | 9 | Local dashboard with bounded file upload, overview, filters, alert details, raw evidence | `feat: add Apache analysis dashboard and file imports` | Complete |
-| 10 | Safe Apache demo logs, full workflow regression checks, detection catalog, final usage documentation | `docs: complete Apache analyzer demo and verification guide` | Planned |
+| 10 | Safe Apache demo logs, full workflow regression checks, detection catalog, final usage documentation | `docs: complete Apache analyzer demo and verification guide` | Complete |
 
 ## Verification strategy
 
@@ -37,4 +37,6 @@ parser edge cases, storage correctness, file-import failures, detection windows
 and thresholds, correlation, input validation, and the complete ingestion-to-alert
 workflow. Use synthetic fixtures rather than real access logs. Update this plan
 and the README at each checkpoint to distinguish available functionality from
-upcoming work.
+upcoming work. All ten increments are now complete. The final checkpoint includes
+reproducible demo/benign data, expected evidence ranges, CLI/upload workflow
+checks, analyst-decision persistence, and the published demo in a real browser.

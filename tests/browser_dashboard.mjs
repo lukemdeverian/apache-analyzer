@@ -2,7 +2,7 @@
 // Chromium browser; no npm packages or existing application data are needed.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ const temporaryRoot = realpathSync(tmpdir());
 const workspace = mkdtempSync(join(temporaryRoot, "apache-dashboard-"));
 let browser;
 let server;
+let demoServer;
 let socket;
 let url;
 let serverOutput = "";
@@ -63,11 +64,11 @@ const field = (selector, value) => evaluate(
 );
 const submit = (selector) => evaluate("document.querySelector(" + JSON.stringify(selector) + ").requestSubmit()");
 
-async function importLog(text, logType, timezone = "UTC") {
+async function importLog(text, logType, timezone = "UTC", filename = "browser-" + logType + ".log") {
   await click("#open-import");
   await evaluate(
     "(() => { const transfer = new DataTransfer(); transfer.items.add(new File([" +
-    JSON.stringify(text) + "], 'browser-" + logType + ".log', {type:'text/plain'})); " +
+    JSON.stringify(text) + "], " + JSON.stringify(filename) + ", {type:'text/plain'})); " +
     "document.getElementById('upload-file').files = transfer.files; })()",
   );
   await field("#upload-type", logType);
@@ -228,6 +229,64 @@ try {
   assert(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Mobile layout overflows the viewport.");
   assert.deepEqual(exceptions, [], "Unexpected browser JavaScript errors.");
   console.log("PASS validation feedback, 11 rule cards, and mobile layout");
+
+  // Run the published demo in a second, empty database so its documented
+  // totals do not depend on the preceding browser scenarios.
+  const demoWorkspace = join(workspace, "public-demo");
+  let demoOutput = "";
+  let demoUrl;
+  demoServer = spawn(python, [join(root, "tests/browser_server.py"), demoWorkspace], {
+    cwd: root, windowsHide: true,
+    env: { ...process.env, APP_HOST: "127.0.0.1", APP_PORT: "5000", APP_DEBUG: "false",
+      DATABASE_PATH: join(demoWorkspace, "browser.sqlite3") },
+  });
+  demoServer.on("error", (error) => { demoOutput += error.message; });
+  demoServer.stdout.on("data", (data) => {
+    demoOutput += data;
+    const match = demoOutput.match(/\{"url":\s*"([^"]+)"\}/);
+    if (match) demoUrl = match[1];
+  });
+  demoServer.stderr.on("data", (data) => { demoOutput += data; });
+  await until(() => demoUrl, "public demo server");
+  await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await command("Page.navigate", { url: demoUrl });
+  await waitFor("document.getElementById('stat-events')?.textContent === '0'", "empty demo workspace");
+  const expected = JSON.parse(readFileSync(join(root, "examples/expected.json"), "utf8"));
+  for (const file of expected.files) {
+    await importLog(readFileSync(join(root, "examples", file.name), "utf8"), file.log_type, "UTC", file.name);
+    assert.match(await evaluate("document.getElementById('import-message').textContent"),
+      new RegExp("Imported " + file.imported_events + " events"));
+    await click("#import-dialog [data-close]");
+  }
+  await waitFor("document.getElementById('stat-events').textContent === '195'", "public demo totals");
+  assert.equal(await evaluate("document.getElementById('stat-open').textContent"), String(expected.alerts));
+  assert.equal(await evaluate("document.getElementById('stat-severe').textContent"), "6");
+  assert.equal(await evaluate("document.getElementById('stat-sources').textContent"), String(expected.distinct_source_ips));
+  await click('[data-view="alerts"]');
+  await field("#rule-filter", "APACHE-REQUEST-BURST");
+  await submit("#alert-filters");
+  await waitFor("document.querySelectorAll('#alert-rows .row-link').length === 1", "demo burst rule filter");
+  await click("#alert-rows .row-link");
+  await waitFor("document.getElementById('evidence-pagination').textContent.includes('1–25 of 120')",
+    "complete burst evidence");
+  for (const range of ["26–50", "51–75", "76–100", "101–120"]) {
+    await click("#evidence-pagination button:last-child");
+    await waitFor("document.getElementById('evidence-pagination').textContent.includes('" + range + " of 120')",
+      "demo evidence page " + range);
+  }
+  await click("#evidence-rows button");
+  await waitFor("document.getElementById('event-metadata').textContent.includes('/demo_access.txt')",
+    "demo upload provenance");
+  assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /Line number143/);
+  await click("#event-dialog [data-close]");
+  await field("#analyst-status", "false_positive");
+  await submit("#status-form");
+  await waitFor("document.getElementById('status-message').textContent === 'Status saved.'", "demo triage");
+  await click("#alert-dialog [data-close]");
+  await click('[data-view="overview"]');
+  await waitFor("document.getElementById('stat-open').textContent === '10'", "demo triage statistics");
+  assert.deepEqual(exceptions, [], "Unexpected browser JavaScript errors during the public demo.");
+  console.log("PASS published demo: 195 events, 11 rules, all 120 burst evidence records, and analyst triage");
   console.log("All browser checks passed.");
 } catch (error) {
   console.error(error);
@@ -242,7 +301,7 @@ try {
     try { await command("Browser.close"); } catch {}
     socket.close();
   }
-  for (const child of [server, browser]) {
+  for (const child of [server, demoServer, browser]) {
     if (!child) continue;
     if (child.exitCode === null) child.kill();
     await until(() => child.exitCode !== null || child.signalCode !== null, "test process stopped", 5000).catch(() => {});
