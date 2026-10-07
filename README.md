@@ -8,27 +8,6 @@ It runs directly on Python without Docker or a database server.
 The implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
-## Build complete: 10 of 10 increments
-
-- Explicit common/combined access (including trailing named fields) and
-  standard/legacy Apache error ingestion
-  through the streaming CLI or browser uploads capped at 10 MiB.
-- Preserved raw evidence, file labels, physical line numbers, and normalized
-  UTC timestamps in versioned local SQLite storage.
-- Eleven detection rules, persistent correlation, complete evidence links,
-  usable merged alert IDs, and four analyst statuses.
-- Dashboard overview, filters, paginated alerts/events, raw record inspection,
-  and JSON investigation APIs.
-- Synthetic demo and benign files, an expected-results manifest, automated
-  workflow regression checks, and an optional real-browser check.
-
-See [ROADMAP.md](ROADMAP.md) for the completed sequence,
-[examples](examples/README.md) for the demo files,
-[the catalog](docs/DETECTIONS.md) for rule behavior, and
-[the verification guide](docs/VERIFICATION.md) for an isolated walkthrough.
-The dashboard HTML, `GET /health`, and `GET /api/rules` load without opening a
-database; dashboard data requests require an initialized schema.
-
 ## Run locally
 
 Use Python 3.11 or newer. From this directory in PowerShell:
