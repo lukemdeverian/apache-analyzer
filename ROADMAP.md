@@ -42,3 +42,14 @@ and the README at each checkpoint to distinguish available functionality from
 upcoming work. All ten increments are now complete. The final checkpoint includes
 reproducible demo/benign data, expected evidence ranges, CLI/upload workflow
 checks, analyst-decision persistence, and the published demo in a real browser.
+
+## Follow-up: bot traffic assessments
+
+Complete: IP-level Confirmed bot, Suspected bot, and Not a bot categories for
+chronoscrate.xyz. Any IP-attributed risk alert overrides normal browsing;
+false-positive alerts are excluded. Successful page requests and language/HTML/CSS
+signals support the normal category. The dashboard includes evidence links,
+filters, analyst-aware reclassification, and an IP export for blocking review.
+Server-wide errors do not attribute blame to individual visitors. See
+[the policy and workflow](docs/BOT_TRAFFIC.md). Suggested commit:
+`feat: assess bot traffic and export IP block candidates`.

@@ -122,7 +122,9 @@ It verifies browser uploads, filters, pagination, literal script evidence,
 status updates, error feedback, catalog recovery, and mobile layout. It then
 uploads gzip-compressed copies of the published demo into a second empty database
 and reviews all 120 burst records, their compressed-file provenance, and a saved
-analyst decision. It also checks damaged-gzip feedback. No existing
+analyst decision. It also checks damaged-gzip feedback, bot classifications,
+IP filters, category pagination, raw evidence, false-positive reclassification,
+and a downloaded ban-candidate file. No existing
 application data or browser profile is used.
 
 The default browser is Microsoft Edge on Windows. Set `BROWSER_PATH` for

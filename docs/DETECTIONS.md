@@ -1,5 +1,9 @@
 # Apache detection catalog
 
+IP-level bot categories combine these risk alerts with site-browsing signals.
+See [Bot traffic assessments](BOT_TRAFFIC.md) for the policy, evidence, and
+developer review/export workflow. The eleven alert rules below are unchanged.
+
 Apache Analyzer has 11 built-in rules. Alerts identify evidence for review;
 request signatures do not establish that a request succeeded. The catalog
 returned by `GET /api/rules` and shown in the dashboard describes these defaults.

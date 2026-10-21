@@ -21,7 +21,8 @@
       <a href="#overview" data-view="overview" aria-current="page"><span aria-hidden="true">01</span> Overview</a>
       <a href="#alerts" data-view="alerts"><span aria-hidden="true">02</span> Alerts</a>
       <a href="#events" data-view="events"><span aria-hidden="true">03</span> Events</a>
-      <a href="#rules" data-view="rules"><span aria-hidden="true">04</span> Detection rules</a>
+      <a href="#bots" data-view="bots"><span aria-hidden="true">04</span> Bot traffic</a>
+      <a href="#rules" data-view="rules"><span aria-hidden="true">05</span> Detection rules</a>
     </nav>
     <div class="sidebar-note"><span class="local-dot" aria-hidden="true"></span> Local workspace
       <p>Apache access + error logs<br>Evidence stays on this machine.</p>
@@ -100,6 +101,26 @@
       </table></div><div id="event-pagination" class="pagination"></div></article>
     </section>
 
+    <section id="view-bots" data-section="bots" aria-label="Bot traffic" hidden>
+      <p class="footnote">For chronoscrate.xyz logs. Any IP-attributed risk alert takes priority over normal browsing. These are rule-based labels; “Not a bot” means normal browsing was observed. Review source-IP attribution before applying a block.</p>
+      <div class="stat-grid bot-stats">
+        <article class="stat"><p>Confirmed bot</p><strong id="bot-confirmed">—</strong><span>Review for blocking</span></article>
+        <article class="stat"><p>Suspected bot</p><strong id="bot-suspected">—</strong><span>Monitor or challenge</span></article>
+        <article class="stat"><p>Not a bot</p><strong id="bot-normal">—</strong><span>Allow and monitor</span></article>
+      </div>
+      <form id="bot-filters" class="sub-filters">
+        <label>Classification<select name="classification"><option value="">All classifications</option><option value="confirmed_bot">Confirmed bot</option><option value="suspected_bot">Suspected bot</option><option value="not_a_bot">Not a bot</option></select></label>
+        <button class="button secondary" type="submit">Apply</button>
+        <button id="export-bots" class="button secondary" type="button">Export ban candidates</button>
+      </form>
+      <article class="panel"><div class="table-scroll"><table><caption class="sr-only">IP bot assessments</caption>
+        <thead><tr><th scope="col">IP address</th><th scope="col">Classification</th><th scope="col">Recommendation</th><th scope="col">Requests</th><th scope="col">Last seen (UTC)</th><th scope="col">Details</th></tr></thead>
+        <tbody id="bot-rows"></tbody>
+      </table></div><div id="bot-pagination" class="pagination"></div></article>
+      <p id="bot-scope" class="footnote"></p>
+      <p class="footnote">Export includes all confirmed IPs matching the shared IP/date filters. It does not apply a firewall block. False-positive alerts are excluded; server-wide alerts are not attributed to individual visitors.</p>
+    </section>
+
     <section id="view-rules" data-section="rules" aria-label="Detection rules" hidden>
       <p class="footnote">Built-in defaults. Custom settings used through Python are not stored in this catalog.</p>
       <div id="rule-cards" class="rule-grid"></div>
@@ -123,6 +144,16 @@
       <div class="dialog-actions"><button id="import-submit" class="button primary" type="submit">Import and analyze</button>
         <button class="button secondary" type="button" data-close="import-dialog">Close</button></div>
     </form>
+  </dialog>
+
+  <dialog id="bot-dialog" class="wide-dialog" aria-labelledby="bot-title">
+    <div class="dialog-heading"><div><p class="eyebrow">IP ASSESSMENT</p><h2 id="bot-title">Bot assessment</h2></div>
+      <button class="close-button" type="button" data-close="bot-dialog" aria-label="Close bot assessment">×</button></div>
+    <dl id="bot-metadata" class="metadata"></dl>
+    <h3>Why this classification?</h3><ul id="bot-reasons"></ul>
+    <h3>Linked risk alerts</h3><div id="bot-risk-evidence" class="bot-evidence"></div>
+    <h3>Browsing evidence</h3><div id="bot-browsing-evidence" class="bot-evidence"></div>
+    <p class="footnote">The log cannot prove a visitor is human. A missing language header or missing CSS request alone is not grounds for a ban. IPs may represent multiple visitors.</p>
   </dialog>
 
   <dialog id="alert-dialog" class="wide-dialog" aria-labelledby="alert-title">

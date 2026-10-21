@@ -15,6 +15,9 @@ _MONTHS = {
 }
 _QUOTED_FIELD = r'(?:[^"\\\r\n]|\\[^\r\n])*'
 _NAMED_FIELD = rf'[A-Za-z][A-Za-z0-9_.-]*:(?:"{_QUOTED_FIELD}"|[^ \t"\r\n]+)'
+_EXTENSION = re.compile(
+    rf'(?P<name>[A-Za-z][A-Za-z0-9_.-]*):(?:"(?P<quoted>{_QUOTED_FIELD})"|(?P<bare>[^ \t"\r\n]+))'
+)
 _ACCESS = re.compile(
     r"[ \t]*(?P<host>[^ \t\r\n]+)[ \t]+(?P<ident>[^ \t\r\n]+)"
     r"[ \t]+(?P<user>[^ \t\r\n]+)[ \t]+\[(?P<time>[^\]\r\n]+)\]"
@@ -91,6 +94,27 @@ def _unescape(value: str) -> str:
 
 def _optional(value: str | None) -> str | None:
     return None if value is None or value == "-" else _unescape(value)
+
+
+def access_extensions(raw_log: str) -> dict[str, str]:
+    """Read named fields from valid combined evidence, without changing events.
+
+    Repeated names are ambiguous and omitted. Values are Apache-unescaped once;
+    header fields remain untrusted observations, including language preferences.
+    """
+    match = _ACCESS.fullmatch(raw_log.removeprefix("\ufeff"))
+    if match is None or not match["extensions"]:
+        return {}
+    result, duplicates = {}, set()
+    for field in _EXTENSION.finditer(match["extensions"]):
+        name = field["name"].lower()
+        if name in result or name in duplicates:
+            result.pop(name, None)
+            duplicates.add(name)
+            continue
+        value = field["quoted"] if field["quoted"] is not None else field["bare"]
+        result[name] = _unescape(value)
+    return result
 
 
 def _ip_or_none(host: str | None) -> str | None:

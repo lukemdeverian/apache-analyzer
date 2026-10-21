@@ -13,6 +13,7 @@ from flask import Blueprint, Flask, Response, current_app, request
 from werkzeug.exceptions import HTTPException, NotFound
 
 from app.alerts import ALERT_STATUSES, SEVERITIES
+from app.bots import CLASSIFICATIONS, assess_bots, policy as bot_policy
 from app.database import get_database, transaction
 from app.detection import BEHAVIORAL_RULES, REQUEST_RULES, SERVER_RULES
 from app.pipeline import DEFAULT_REQUEST_CORRELATION_SECONDS
@@ -98,6 +99,8 @@ def _json_value(value: Any) -> Any:
         return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     if isinstance(value, dict):
         return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
     return value
 
 
@@ -262,6 +265,41 @@ def statistics() -> dict[str, Any]:
     filters = _common_filters()
     with _store() as store:
         return _json_value(store.statistics(**filters))
+
+
+@api.get("/bots")
+def bots() -> dict[str, Any]:
+    _query(_COMMON_FILTERS | _PAGE_PARAMETERS | {"classification"})
+    filters, page = _common_filters(), _page()
+    classification = _choice("classification", CLASSIFICATIONS)
+    with _store() as store:
+        items, summary = assess_bots(store, **filters)
+    if classification is not None:
+        items = [item for item in items if item["classification"] == classification]
+    items.sort(key=lambda item: (ip_address(item["source_ip"]).version, int(ip_address(item["source_ip"]))))
+    items.sort(key=lambda item: item["last_seen"], reverse=page["newest_first"])
+    items.sort(key=lambda item: CLASSIFICATIONS.index(item["classification"]))
+    total = len(items)
+    items = items[page["offset"]:page["offset"] + page["limit"]]
+    return {
+        "items": _json_value(items), "summary": summary, "policy": bot_policy(),
+        "pagination": _pagination(page, total, len(items)),
+    }
+
+
+@api.get("/bots/export")
+def export_ban_candidates() -> Response:
+    _query(_COMMON_FILTERS)
+    filters = _common_filters()
+    with _store() as store:
+        items, _ = assess_bots(store, **filters)
+    addresses = sorted(
+        (item["source_ip"] for item in items if item["classification"] == "confirmed_bot"),
+        key=lambda address: (ip_address(address).version, int(ip_address(address))),
+    )
+    response = Response("".join(address + "\n" for address in addresses), mimetype="text/plain")
+    response.headers["Content-Disposition"] = 'attachment; filename="ban-candidates.txt"'
+    return response
 
 
 def _error_response(error: APIError) -> tuple[dict[str, Any], int]:

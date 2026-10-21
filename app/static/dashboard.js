@@ -6,14 +6,19 @@
   const statusLabels = {
     new: "New", investigating: "Investigating", resolved: "Resolved", false_positive: "False positive",
   };
+  const botLabels = { confirmed_bot: "Confirmed bot", suspected_bot: "Suspected bot", not_a_bot: "Not a bot" };
+  const recommendations = {
+    review_for_block: "Review for blocking", monitor_or_challenge: "Monitor or challenge", allow_and_monitor: "Allow and monitor",
+  };
   const titles = {
     overview: ["Overview", "Import your logs. Follow the evidence."],
     alerts: ["Alerts", "Review suspicious activity and track your investigation."],
     events: ["Events", "Browse parsed records and their original evidence."],
+    bots: ["Bot traffic", "Review IPs by risk alerts and normal browsing on chronoscrate.xyz."],
     rules: ["Detection rules", "Eleven rules for Apache request patterns and server issues."],
   };
   const state = {
-    view: "overview", common: {}, alerts: {}, events: {}, offsets: { alerts: 0, events: 0 },
+    view: "overview", common: {}, alerts: {}, events: {}, bots: {}, offsets: { alerts: 0, events: 0, bots: 0 },
     rules: new Map(), alert: null, evidenceOffset: 0, importing: false,
   };
   let loadSerial = 0;
@@ -142,6 +147,64 @@
     $(id).replaceChildren(...rows);
   }
 
+  function openBot(item) {
+    $("bot-title").textContent = item.source_ip + " · " + item.label;
+    metadata("bot-metadata", [
+      ["Recommendation", recommendations[item.recommendation]], ["Requests", item.request_count],
+      ["First seen (UTC)", time(item.first_seen)], ["Last seen (UTC)", time(item.last_seen)],
+      ["Home page requests", item.home_requests], ["Checkout requests", item.checkout_requests],
+      ["HTML requests", item.html_requests], ["CSS requests", item.css_requests],
+      ["Requests with language preference", item.language_requests],
+      ["Requests with a logged language field", item.language_logged_requests],
+      ["Observed languages", item.languages.join(", ") || "Not observed"],
+      ["Risk alerts", item.risk_alert_count],
+    ]);
+    $("bot-reasons").replaceChildren(...item.reasons.map((reason) => element("li", reason)));
+    $("bot-risk-evidence").replaceChildren(...(item.risk_alerts.length
+      ? item.risk_alerts.map((alert) => {
+        const button = element("button", "#" + alert.id + " " + alert.title + " · " + alert.status, "text-button");
+        button.type = "button";
+        button.addEventListener("click", () => {
+          $("bot-dialog").close();
+          openAlert(alert.id);
+        });
+        return button;
+      }) : [element("p", "No IP-attributed risk alerts in this selection.", "muted")]));
+    $("bot-browsing-evidence").replaceChildren(...(item.browsing_evidence.length
+      ? item.browsing_evidence.map((proof) => {
+        const button = element("button", proof.signal.replaceAll("_", " ") + " · Event #" + proof.event_id, "text-button");
+        button.type = "button";
+        button.addEventListener("click", () => openEvent(proof.event_id));
+        return button;
+      }) : [element("p", "No successful browsing evidence in this selection.", "muted")]));
+    if (!$("bot-dialog").open) $("bot-dialog").showModal();
+  }
+
+  function botRows(items, summary) {
+    $("bot-confirmed").textContent = summary.by_classification.confirmed_bot.toLocaleString();
+    $("bot-suspected").textContent = summary.by_classification.suspected_bot.toLocaleString();
+    $("bot-normal").textContent = summary.by_classification.not_a_bot.toLocaleString();
+    $("bot-scope").textContent = summary.total + " IPs assessed. " + summary.unattributed_requests +
+      " access requests lack a usable IP. Counts cover the shared IP/date filters.";
+    $("export-bots").disabled = summary.ban_candidates === 0;
+    if (!items.length) {
+      emptyRows("bot-rows", "No IPs match. Import Apache access logs or adjust the filters.");
+      return;
+    }
+    $("bot-rows").replaceChildren(...items.map((item) => {
+      const row = element("tr"), classification = element("td"), details = element("td");
+      classification.append(badge(item.classification, botLabels));
+      const button = element("button", "Review IP", "row-link");
+      button.type = "button";
+      button.addEventListener("click", () => openBot(item));
+      details.append(button);
+      row.append(element("td", item.source_ip, "mono"), classification,
+        element("td", recommendations[item.recommendation]), element("td", item.request_count, "mono"),
+        element("td", time(item.last_seen), "time-cell"), details);
+      return row;
+    }));
+  }
+
   function pagination(id, page, onChange) {
     const label = page.total && page.returned
       ? (page.offset + 1) + "–" + (page.offset + page.returned) + " of " + page.total.toLocaleString()
@@ -249,7 +312,7 @@
       }
       return;
     }
-    const table = view === "overview" ? "recent-alerts" : view === "alerts" ? "alert-rows" : "event-rows";
+    const table = view === "overview" ? "recent-alerts" : view === "alerts" ? "alert-rows" : view === "bots" ? "bot-rows" : "event-rows";
     emptyRows(table, "Loading records…");
     if (view === "overview") {
       for (const id of ["stat-events", "stat-open", "stat-severe", "stat-sources"]) $(id).textContent = "—";
@@ -258,22 +321,28 @@
       $("alert-total").textContent = "";
       $("history-range").textContent = "Loading selected history…";
     } else {
-      $(view === "alerts" ? "alert-pagination" : "event-pagination").replaceChildren();
+      $(view === "alerts" ? "alert-pagination" : view === "bots" ? "bot-pagination" : "event-pagination").replaceChildren();
+      if (view === "bots") {
+        for (const id of ["bot-confirmed", "bot-suspected", "bot-normal"]) $(id).textContent = "—";
+        $("export-bots").disabled = true;
+        $("bot-scope").textContent = "Loading assessments…";
+      }
     }
     const values = view === "overview" ? { ...state.common, limit: 5 }
       : { ...state.common, ...state[view], limit: PAGE_SIZE, offset: state.offsets[view] };
     try {
       const [stats, list] = await Promise.all([
         api("stats?" + query(state.common)),
-        api((view === "events" ? "events?" : "alerts?") + query(values)),
+        api((view === "events" ? "events?" : view === "bots" ? "bots?" : "alerts?") + query(values)),
         state.rules.size ? Promise.resolve() : loadRules(),
       ]);
       if (serial !== loadSerial) return;
       renderStats(stats);
-      if (view === "events") eventRows(table, list.items);
+      if (view === "bots") botRows(list.items, list.summary);
+      else if (view === "events") eventRows(table, list.items);
       else alertRows(table, list.items);
       if (view !== "overview") {
-        pagination(view === "alerts" ? "alert-pagination" : "event-pagination", list.pagination, (offset) => {
+        pagination(view === "alerts" ? "alert-pagination" : view === "bots" ? "bot-pagination" : "event-pagination", list.pagination, (offset) => {
           state.offsets[view] = offset;
           refresh();
         });
@@ -500,10 +569,10 @@
   $("common-filters").addEventListener("submit", (event) => {
     event.preventDefault();
     state.common = formValues(event.target, true);
-    state.offsets.alerts = state.offsets.events = 0;
+    state.offsets.alerts = state.offsets.events = state.offsets.bots = 0;
     refresh();
   });
-  for (const view of ["alert", "event"]) {
+  for (const view of ["alert", "event", "bot"]) {
     $(view + "-filters").addEventListener("submit", (event) => {
       event.preventDefault();
       state[view + "s"] = formValues(event.target);
@@ -512,12 +581,34 @@
     });
   }
   $("clear-filters").addEventListener("click", () => {
-    for (const id of ["common-filters", "alert-filters", "event-filters"]) $(id).reset();
-    state.common = state.alerts = state.events = {};
-    state.offsets.alerts = state.offsets.events = 0;
+    for (const id of ["common-filters", "alert-filters", "event-filters", "bot-filters"]) $(id).reset();
+    state.common = state.alerts = state.events = state.bots = {};
+    state.offsets.alerts = state.offsets.events = state.offsets.bots = 0;
     refresh();
   });
   $("refresh").addEventListener("click", refresh);
+  $("export-bots").addEventListener("click", async () => {
+    $("export-bots").disabled = true;
+    try {
+      const response = await fetch("/api/bots/export?" + query(state.common), { cache: "no-store" });
+      if (!response.ok) {
+        const body = await response.json();
+        throw new Error(body.error?.message || "Export failed.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = element("a");
+      link.href = url;
+      link.download = "ban-candidates.txt";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      message("page-message", error.message);
+    } finally {
+      $("export-bots").disabled = $("bot-confirmed").textContent === "0";
+    }
+  });
 
   function navigate() {
     const [candidate, identity] = location.hash.slice(1).split("/");
@@ -533,6 +624,7 @@
     document.title = titles[view][0] + " · Apache Analyzer";
     $("common-filters").hidden = view === "rules";
     if ($("event-dialog").open) $("event-dialog").close();
+    if ($("bot-dialog").open) $("bot-dialog").close();
     const hasAlert = view === "alerts" && identity && /^[0-9]+$/.test(identity);
     if ($("alert-dialog").open && !hasAlert) $("alert-dialog").close();
     refresh();

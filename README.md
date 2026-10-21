@@ -19,6 +19,8 @@ Nightwatch's separation of parsing, storage, detection, and presentation as a re
   usable merged alert IDs, and four analyst statuses.
 - Dashboard overview, filters, paginated alerts/events, raw record inspection,
   and JSON investigation APIs.
+- Bot traffic assessments for chronoscrate.xyz, linked browsing/risk evidence,
+  analyst-aware categories, and an IP export for blocking review.
 - Synthetic demo and benign files, an expected-results manifest, automated
   workflow regression checks, and an optional real-browser check.
 
@@ -130,6 +132,27 @@ Requests, messages, filenames, and raw logs are displayed as literal text.
 Missing databases show initialization guidance; initialize explicitly with
 `flask --app app init-db` before importing. The dashboard does not initialize
 or upgrade storage automatically.
+
+## Assess bot traffic
+
+Open **Bot traffic** to review IPs against the Chronos Crate browsing policy:
+
+| Category | Policy | Action |
+| --- | --- | --- |
+| Confirmed bot | Any IP-attributed risk alert, excluding false positives | Review for blocking |
+| Suspected bot | Insufficient normal browsing evidence and no qualifying risk alert | Monitor or challenge |
+| Not a bot | Successful GET of `/` or `/checkout`, or a language + HTML + CSS sequence, with no qualifying risk alert | Allow and monitor |
+
+Risk alerts take priority over normal browsing. Labels are rule-based assessments,
+not proof of automation or humanity. Server-wide alerts do not assign blame to
+individual visitors. Existing imported logs work without reimporting or migrating
+the database. Language signals require an extended combined log that includes
+the language header; missing headers are not treated as proof of bot activity.
+
+Use **Review IP** for reasons and evidence links, and **Export ban candidates**
+to download confirmed IPs matching the shared IP/date filters. The export is for
+review and does not apply a block. See the [bot traffic guide](docs/BOT_TRAFFIC.md)
+for criteria, logging configuration, sample data, limitations, and APIs.
 
 ## Import Apache log files
 
@@ -704,7 +727,8 @@ and may contain letters, digits, periods, underscores, or hyphens. Quoted values
 can contain spaces and Apache escapes; bare values must be nonempty and contain
 no whitespace or double quotes. These records have `log_format` set to
 `extended_combined`. Extra fields remain in the full raw evidence and do not
-override core fields or add detection inputs. Incomplete quotes, unnamed
+override core fields. Bot assessments read language and fetch-destination fields;
+the eleven security rules keep their existing inputs. Incomplete quotes, unnamed
 trailing data, and named fields without both combined fields are rejected.
 Apache supports such custom suffixes through
 [`LogFormat`](https://httpd.apache.org/docs/2.4/mod/mod_log_config.html#logformat).

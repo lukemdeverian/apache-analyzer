@@ -1,0 +1,8 @@
+203.0.113.201 - - [21/Oct/2026:09:00:00 +0000] "GET / HTTP/1.1" 200 1200 "-" "Synthetic browser" lang:"en-US"
+203.0.113.201 - - [21/Oct/2026:09:00:01 +0000] "GET /checkout HTTP/1.1" 200 1500 "-" "Synthetic browser" lang:"en-US"
+203.0.113.201 - - [21/Oct/2026:09:00:02 +0000] "GET /.env HTTP/1.1" 404 120 "-" "Synthetic browser"
+203.0.113.202 - - [21/Oct/2026:09:00:03 +0000] "GET / HTTP/1.1" 200 1200 "-" "Synthetic browser"
+203.0.113.203 - - [21/Oct/2026:09:00:04 +0000] "GET /about.html HTTP/1.1" 200 1200 "-" "Synthetic browser" lang:"fr-FR,fr;q=0.9" sfd:"document"
+203.0.113.203 - - [21/Oct/2026:09:00:05 +0000] "GET /static/main.css?v=1 HTTP/1.1" 304 0 "-" "Synthetic browser"
+203.0.113.204 - - [21/Oct/2026:09:00:06 +0000] "GET /unknown HTTP/1.1" 404 120 "-" "Synthetic client"
+203.0.113.205 - - [21/Oct/2026:09:00:07 +0000] "GET /only.css HTTP/1.1" 200 120 "-" "Synthetic client" lang:"zh-CN"

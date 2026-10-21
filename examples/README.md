@@ -55,3 +55,9 @@ These counts assume each file is imported once with the built-in defaults.
 Repeating an import adds events and can extend alerts or meet additional
 thresholds. Repeating detection without adding events leaves existing alerts
 and analyst statuses unchanged.
+
+For the separate bot workflow, import [bot_traffic.txt](bot_traffic.txt) into a
+fresh database as an access log. Eight events produce one alert and five IP
+assessments: **one confirmed bot, two suspected bots, and two Not a bot**.
+The [bot traffic guide](../docs/BOT_TRAFFIC.md) explains the expected evidence
+and export. This sample is separate from the original 195-event demo.
