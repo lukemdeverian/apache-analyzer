@@ -11,6 +11,7 @@ from flask.cli import with_appcontext
 
 from app.alerts import ALERT_STATUSES, AlertStatus
 from app.database import get_database
+from app.domains import DEFAULT_DOMAIN, DOMAIN_IDS
 from app.events import ApacheLogType
 from app.ingestion import (
     DEFAULT_MAX_DECOMPRESSED_BYTES, DEFAULT_MAX_LINE_BYTES, MAX_LINE_BYTES, parse_error_timezone,
@@ -35,6 +36,7 @@ def _echo_detection_summary(result: DetectionSummary) -> None:
 
 
 @click.command("ingest")
+@click.option("--domain", "domain_id", type=click.Choice(DOMAIN_IDS), default=DEFAULT_DOMAIN, show_default=True)
 @click.argument(
     "log_file",
     type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, path_type=Path),
@@ -59,11 +61,11 @@ def _echo_detection_summary(result: DetectionSummary) -> None:
 @with_appcontext
 def ingest_command(
     log_file: Path, log_type: ApacheLogType, error_timezone: tzinfo,
-    max_line_bytes: int, max_decompressed_bytes: int, json_output: bool,
+    max_line_bytes: int, max_decompressed_bytes: int, json_output: bool, domain_id: str,
 ) -> None:
     """Import plain or gzip Apache LOG_FILE and detect/correlate alerts atomically."""
     try:
-        store = SQLiteStore(get_database())
+        store = SQLiteStore(get_database(domain_id))
         result = analyze_file(
             log_file, log_type, store, error_timezone=error_timezone,
             max_line_bytes=max_line_bytes,
@@ -74,12 +76,19 @@ def ingest_command(
             f"{exc} No events from this import were saved; alert changes were rolled back."
         ) from exc
     if json_output:
-        click.echo(json.dumps(result.as_dict(), indent=2))
+        click.echo(json.dumps({**result.as_dict(), "domain_id": domain_id}, indent=2))
         return
     imported = result.import_summary
+    if imported.duplicate_file:
+        click.echo(
+            f"Already imported; skipped {imported.skipped_duplicate_events} duplicate events. "
+            f"Original import #{imported.duplicate_of_import_id}: {imported.duplicate_of_source_file}"
+        )
+        return
     click.echo(f"Imported {imported.imported_events} Apache {imported.log_type} events from {imported.source_file}")
     if imported.assumed_timezone is not None:
         click.echo(f"Assumed error timezone: {imported.assumed_timezone}")
+    click.echo(f"Repeated lines retained for review: {imported.duplicate_lines}")
     click.echo(
         f"Lines read: {imported.lines_read}; rejected: {imported.rejected_lines}; blank: {imported.blank_lines}"
     )
@@ -91,12 +100,13 @@ def ingest_command(
 
 
 @click.command("detect")
+@click.option("--domain", "domain_id", type=click.Choice(DOMAIN_IDS), default=DEFAULT_DOMAIN, show_default=True)
 @click.option("--json", "json_output", is_flag=True, help="Print detection counts as JSON.")
 @with_appcontext
-def detect_command(json_output: bool) -> None:
+def detect_command(json_output: bool, domain_id: str) -> None:
     """Detect and correlate alerts from all stored Apache evidence."""
     try:
-        result = detect_events(SQLiteStore(get_database()))
+        result = detect_events(SQLiteStore(get_database(domain_id)))
     except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         raise click.ClickException(f"{exc} Alert changes from this scan were rolled back.") from exc
     if json_output:
@@ -106,13 +116,14 @@ def detect_command(json_output: bool) -> None:
 
 
 @click.command("alert-status")
+@click.option("--domain", "domain_id", type=click.Choice(DOMAIN_IDS), default=DEFAULT_DOMAIN, show_default=True)
 @click.argument("alert_id", type=click.IntRange(1, 2**63 - 1))
 @click.argument("status", type=click.Choice(ALERT_STATUSES))
 @with_appcontext
-def alert_status_command(alert_id: int, status: AlertStatus) -> None:
+def alert_status_command(alert_id: int, status: AlertStatus, domain_id: str) -> None:
     """Set ALERT_ID to new, investigating, resolved, or false_positive."""
     try:
-        stored = SQLiteStore(get_database()).set_alert_status(alert_id, status)
+        stored = SQLiteStore(get_database(domain_id)).set_alert_status(alert_id, status)
     except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
     if stored is None:

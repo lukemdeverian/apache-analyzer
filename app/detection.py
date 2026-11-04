@@ -9,7 +9,7 @@ from app.alerts import Severity
 from app.events import ApacheLogType
 from app.signatures import (
     DEFAULT_ALLOWED_METHODS, RequestInspection, sensitive_file, sql_injection,
-    traversal, unusual_method, validate_allowed_methods, xss,
+    traversal, unusual_method, validate_allowed_methods, wordpress_probe, xss,
 )
 from app.storage import SQLiteStore, StoredEvent
 
@@ -131,6 +131,11 @@ REQUEST_RULES = (
     RequestRule(
         "APACHE-UNUSUAL-METHOD", "Unusual HTTP method",
         "A parsed HTTP method outside the configured expected set.", "medium", unusual_method,
+    ),
+    RequestRule(
+        "APACHE-WORDPRESS-PROBE", "Unexpected WordPress endpoint probe",
+        "WordPress installation, administration, login, or XML-RPC entry points unexpected on the study sites.",
+        "high", wordpress_probe,
     ),
 )
 

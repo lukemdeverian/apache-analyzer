@@ -67,3 +67,35 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status_time ON alerts(status, last_seen, i
 CREATE INDEX IF NOT EXISTS idx_alerts_correlation ON alerts(rule_id, grouping_key, status, last_seen);
 CREATE INDEX IF NOT EXISTS idx_alert_events_event ON alert_events(event_id);
 CREATE INDEX IF NOT EXISTS idx_alert_merges_target ON alert_merges(alert_id);
+
+CREATE TABLE IF NOT EXISTS imports (
+    id INTEGER PRIMARY KEY,
+    source_file TEXT NOT NULL,
+    log_type TEXT NOT NULL CHECK (log_type IN ('access', 'error')),
+    assumed_timezone TEXT,
+    max_line_bytes INTEGER CHECK (max_line_bytes > 0),
+    legacy INTEGER NOT NULL DEFAULT 0 CHECK (legacy IN (0, 1)),
+    recorded_at TEXT NOT NULL,
+    content_sha256 TEXT,
+    records_sha256 TEXT,
+    lines_read INTEGER CHECK (lines_read >= 0),
+    imported_events INTEGER NOT NULL DEFAULT 0 CHECK (imported_events >= 0),
+    blank_lines INTEGER CHECK (blank_lines >= 0),
+    malformed_lines INTEGER CHECK (malformed_lines >= 0),
+    encoding_error_lines INTEGER CHECK (encoding_error_lines >= 0),
+    oversized_lines INTEGER CHECK (oversized_lines >= 0),
+    invalid_value_lines INTEGER CHECK (invalid_value_lines >= 0),
+    duplicate_lines INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_lines >= 0),
+    UNIQUE (log_type, content_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS import_lines (
+    event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE RESTRICT,
+    import_id INTEGER NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
+    record_sha256 TEXT NOT NULL,
+    duplicate_of_event_id INTEGER REFERENCES events(id) ON DELETE RESTRICT,
+    CHECK (duplicate_of_event_id IS NULL OR duplicate_of_event_id < event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_imports_records ON imports(log_type, records_sha256, id);
+CREATE INDEX IF NOT EXISTS idx_import_lines_hash ON import_lines(import_id, record_sha256, event_id);

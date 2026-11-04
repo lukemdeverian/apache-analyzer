@@ -95,5 +95,8 @@ def analyze_file(
             max_line_bytes=max_line_bytes, source_label=source_label,
             max_decompressed_bytes=max_decompressed_bytes,
         )
-        detection = detect_events(store, engine=engine, request_correlation_seconds=request_correlation_seconds)
+        detection = (
+            DetectionSummary() if imported.duplicate_file else
+            detect_events(store, engine=engine, request_correlation_seconds=request_correlation_seconds)
+        )
     return AnalysisSummary(import_summary=imported, detection=detection)

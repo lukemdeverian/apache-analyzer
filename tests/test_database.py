@@ -21,7 +21,7 @@ def test_initialization_creates_versioned_schema_and_enables_foreign_keys():
         tables = {
             row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        assert tables == {"events", "alerts", "alert_events", "alert_merges"}
+        assert tables == {"events", "alerts", "alert_events", "alert_merges", "imports", "import_lines"}
         assert connection.execute("PRAGMA application_id").fetchone()[0] == APPLICATION_ID
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1

@@ -22,7 +22,8 @@
       <a href="#alerts" data-view="alerts"><span aria-hidden="true">02</span> Alerts</a>
       <a href="#events" data-view="events"><span aria-hidden="true">03</span> Events</a>
       <a href="#bots" data-view="bots"><span aria-hidden="true">04</span> Bot traffic</a>
-      <a href="#rules" data-view="rules"><span aria-hidden="true">05</span> Detection rules</a>
+      <a href="#comparison" data-view="comparison"><span aria-hidden="true">05</span> Domain comparison</a>
+      <a href="#rules" data-view="rules"><span aria-hidden="true">06</span> Detection rules</a>
     </nav>
     <div class="sidebar-note"><span class="local-dot" aria-hidden="true"></span> Local workspace
       <p>Apache access + error logs<br>Evidence stays on this machine.</p>
@@ -41,6 +42,13 @@
     <noscript><p class="notice error">Enable JavaScript to browse records and import Apache files.</p></noscript>
     <div id="page-message" class="notice error" role="alert" hidden></div>
     <p id="load-status" class="sr-only" role="status" aria-live="polite"></p>
+
+    <div id="domain-selector" class="filters domain-switch">
+      <label>Website<select id="active-domain">
+        {% for domain in domains %}<option value="{{ domain.id }}" data-hostname="{{ domain.hostname }}">{{ domain.name }} — {{ domain.hostname }} ({{ domain.provider }})</option>{% endfor %}
+      </select></label>
+      <p id="domain-caption" class="muted"></p>
+    </div>
 
     <form id="common-filters" class="filters">
       <label>Source IP<input name="source_ip" placeholder="All logged IPs" maxlength="45" autocomplete="off"></label>
@@ -102,7 +110,7 @@
     </section>
 
     <section id="view-bots" data-section="bots" aria-label="Bot traffic" hidden>
-      <p class="footnote">For chronoscrate.xyz logs. Any IP-attributed risk alert takes priority over normal browsing. These are rule-based labels; “Not a bot” means normal browsing was observed. Review source-IP attribution before applying a block.</p>
+      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. Any IP-attributed risk alert takes priority. Labels are rule-based; review source-IP attribution before applying a block.</p>
       <div class="stat-grid bot-stats">
         <article class="stat"><p>Confirmed bot</p><strong id="bot-confirmed">—</strong><span>Review for blocking</span></article>
         <article class="stat"><p>Suspected bot</p><strong id="bot-suspected">—</strong><span>Monitor or challenge</span></article>
@@ -121,6 +129,15 @@
       <p class="footnote">Export includes all confirmed IPs matching the shared IP/date filters. It does not apply a firewall block. False-positive alerts are excluded; server-wide alerts are not attributed to individual visitors.</p>
     </section>
 
+    <section id="view-comparison" data-section="comparison" aria-label="Domain comparison" hidden>
+      <p class="footnote">Compare the same IP/date selection across both sites. Provider labels are supplied study metadata. Observed differences do not establish that DNS or the provider caused them.</p>
+      <article class="panel"><div class="table-scroll"><table><caption class="sr-only">Traffic comparison by domain and provider</caption>
+        <thead><tr><th scope="col">Website / provider</th><th scope="col">Access requests</th><th scope="col">Alerts</th><th scope="col">Alerts / 1,000 requests</th><th scope="col">IP categories</th><th scope="col">Confirmed bot IPs (%)</th></tr></thead>
+        <tbody id="comparison-rows"></tbody>
+      </table></div></article>
+      <p class="footnote">IP categories: confirmed / suspected / normal. Percentages use assessed IPs, not requests. “—” means no denominator. Alert counts use first-seen times and include server-wide issues; bot categories use linked evidence in the selected range.</p>
+    </section>
+
     <section id="view-rules" data-section="rules" aria-label="Detection rules" hidden>
       <p class="footnote">Built-in defaults. Custom settings used through Python are not stored in this catalog.</p>
       <div id="rule-cards" class="rule-grid"></div>
@@ -135,15 +152,31 @@
       <p class="muted">Choose a UTF-8 log or gzip (.gz) file, up to 10 MiB. Gzip logs can expand to {{ max_decompressed_bytes // 1048576 }} MiB. Each import adds records and detects alerts.</p>
       <label class="file-field">Apache log file<input id="upload-file" name="file" type="file" accept=".log,.txt,.gz,text/plain,application/gzip,application/x-gzip" required></label>
       <div class="form-grid">
+        <label>Website<select id="upload-domain" name="domain_id" required><option value="">Choose a website</option>
+          {% for domain in domains %}<option value="{{ domain.id }}">{{ domain.name }} — {{ domain.hostname }} ({{ domain.provider }})</option>{% endfor %}
+        </select></label>
         <label>Log format<select id="upload-type" name="log_type" required><option value="">Choose a format</option><option value="access">Apache access log</option><option value="error">Apache error log</option></select></label>
         <label>Error-log timezone<input id="upload-timezone" name="error_timezone" value="UTC" placeholder="UTC or -07:00" maxlength="16" disabled><span class="field-help">Access records use their logged offset.</span></label>
       </div>
-      <p class="footnote">Common/combined access logs and standard/legacy Apache error logs. Reimporting a file adds another copy of its events.</p>
+      <p class="footnote">Common/combined access logs and standard/legacy Apache error logs. Repeated files are skipped per website. Identical lines within a file are retained and flagged for review.</p>
       <div id="import-message" class="notice" role="status" aria-live="polite" hidden></div>
       <dl id="import-summary" class="metadata" hidden></dl>
+      <button id="review-duplicate-lines" class="button secondary" type="button" hidden>Review repeated lines</button>
       <div class="dialog-actions"><button id="import-submit" class="button primary" type="submit">Import and analyze</button>
         <button class="button secondary" type="button" data-close="import-dialog">Close</button></div>
     </form>
+  </dialog>
+
+  <dialog id="duplicate-dialog" class="wide-dialog" aria-labelledby="duplicate-title">
+    <div class="dialog-heading"><div><p class="eyebrow">IMPORT REVIEW</p><h2 id="duplicate-title">Repeated log lines</h2></div>
+      <button class="close-button" type="button" data-close="duplicate-dialog" aria-label="Close repeated lines">×</button></div>
+    <p class="footnote">These records were retained. Identical lines can represent genuine separate requests within the same timestamp.</p>
+    <p id="duplicate-source" class="detail-description"></p>
+    <div id="duplicate-message" class="notice error" role="alert" hidden></div>
+    <div class="table-scroll"><table><caption class="sr-only">Repeated records and their first occurrence</caption>
+      <thead><tr><th scope="col">First line</th><th scope="col">Repeated line</th><th scope="col">Original evidence</th><th scope="col">Repeated evidence</th></tr></thead>
+      <tbody id="duplicate-rows"></tbody>
+    </table></div><div id="duplicate-pagination" class="pagination"></div>
   </dialog>
 
   <dialog id="bot-dialog" class="wide-dialog" aria-labelledby="bot-title">
@@ -151,9 +184,19 @@
       <button class="close-button" type="button" data-close="bot-dialog" aria-label="Close bot assessment">×</button></div>
     <dl id="bot-metadata" class="metadata"></dl>
     <h3>Why this classification?</h3><ul id="bot-reasons"></ul>
+    <section id="bot-requests" aria-label="Requests made by this IP">
+      <div class="panel-heading"><h3>Requests made by this IP <span id="bot-request-count" class="muted"></span></h3>
+        <button id="refresh-bot-requests" class="button secondary" type="button">Refresh requests</button></div>
+      <p class="footnote">All access requests for this IP in the selected website and date range, oldest first. Includes requests that triggered no alert. Select View record for the original log line.</p>
+      <div id="bot-request-message" class="notice error" role="alert" hidden></div>
+      <div class="table-scroll"><table><caption class="sr-only">Access requests made by the selected IP</caption>
+        <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Type</th><th scope="col">Source</th><th scope="col">Request</th><th scope="col">HTTP status</th><th scope="col">Details</th></tr></thead>
+        <tbody id="bot-request-rows"></tbody>
+      </table></div><div id="bot-request-pagination" class="pagination"></div>
+    </section>
     <h3>Linked risk alerts</h3><div id="bot-risk-evidence" class="bot-evidence"></div>
-    <h3>Browsing evidence</h3><div id="bot-browsing-evidence" class="bot-evidence"></div>
-    <p class="footnote">The log cannot prove a visitor is human. A missing language header or missing CSS request alone is not grounds for a ban. IPs may represent multiple visitors.</p>
+    <h3>CSS evidence</h3><div id="bot-browsing-evidence" class="bot-evidence"></div>
+    <p class="footnote">CSS requests suggest normal browsing; HTML and language are context only. The log cannot prove a visitor is human. Missing CSS alone is not grounds for a ban. IPs may represent multiple visitors.</p>
   </dialog>
 
   <dialog id="alert-dialog" class="wide-dialog" aria-labelledby="alert-title">

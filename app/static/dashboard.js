@@ -14,17 +14,59 @@
     overview: ["Overview", "Import your logs. Follow the evidence."],
     alerts: ["Alerts", "Review suspicious activity and track your investigation."],
     events: ["Events", "Browse parsed records and their original evidence."],
-    bots: ["Bot traffic", "Review IPs by risk alerts and normal browsing on chronoscrate.xyz."],
-    rules: ["Detection rules", "Eleven rules for Apache request patterns and server issues."],
+    bots: ["Bot traffic", "Review IPs by risk alerts and successful CSS requests."],
+    comparison: ["Domain comparison", "Compare observed traffic for Chronoscrate and La Jolla Seals."],
+    rules: ["Detection rules", "Twelve rules for Apache request patterns and server issues."],
   };
   const state = {
     view: "overview", common: {}, alerts: {}, events: {}, bots: {}, offsets: { alerts: 0, events: 0, bots: 0 },
-    rules: new Map(), alert: null, evidenceOffset: 0, importing: false,
+    rules: new Map(), alert: null, evidenceOffset: 0, importing: false, domain_id: "chronoscrate", importReview: null,
+    botRequests: null,
   };
   let loadSerial = 0;
   let alertSerial = 0;
   let eventSerial = 0;
   let evidenceSerial = 0;
+  let duplicateSerial = 0;
+  let botRequestSerial = 0;
+  const initialDomain = new URLSearchParams(location.search).get("domain_id");
+  if (Array.from($("active-domain").options).some((option) => option.value === initialDomain)) {
+    state.domain_id = initialDomain;
+  }
+  $("active-domain").value = state.domain_id;
+
+  function domainLabel() {
+    return $("active-domain").selectedOptions[0].textContent;
+  }
+
+  function applyDomain(domainId) {
+    state.domain_id = domainId;
+    $("active-domain").value = domainId;
+    state.offsets.alerts = state.offsets.events = state.offsets.bots = 0;
+    ++alertSerial;
+    ++eventSerial;
+    ++evidenceSerial;
+    ++duplicateSerial;
+    ++botRequestSerial;
+    for (const id of ["alert-dialog", "event-dialog", "bot-dialog", "duplicate-dialog"]) {
+      if ($(id).open) $(id).close();
+    }
+    const url = new URL(location.href);
+    if (domainId === "chronoscrate") url.searchParams.delete("domain_id");
+    else url.searchParams.set("domain_id", domainId);
+    if (url.hash.startsWith("#alerts/")) url.hash = "#alerts";
+    history.replaceState(null, "", url);
+    $("bot-site").textContent = $("active-domain").selectedOptions[0].dataset.hostname;
+    $("domain-caption").textContent = "Events, alerts, assessments, and exports are scoped to this website.";
+  }
+
+  function apiPath(path) {
+    const url = new URL("/api/" + path, location.origin);
+    if (state.domain_id !== "chronoscrate" && !path.startsWith("domains") && path !== "imports") {
+      url.searchParams.set("domain_id", state.domain_id);
+    }
+    return url.pathname + url.search;
+  }
 
   // Log-derived values always enter the document as text. Never interpret
   // request targets, messages, filenames, or raw evidence as HTML or URLs.
@@ -45,7 +87,7 @@
   async function api(path, options = {}) {
     let response;
     try {
-      response = await fetch("/api/" + path, { cache: "no-store", ...options });
+      response = await fetch(apiPath(path), { cache: "no-store", ...options });
     } catch {
       throw new Error("Cannot reach the analyzer. Check that the local server is running, then refresh.");
     }
@@ -148,13 +190,18 @@
   }
 
   function openBot(item) {
+    state.botRequests = {
+      domainId: state.domain_id,
+      filters: { ...state.common, source_ip: item.source_ip, log_type: "access", order: "asc" },
+    };
     $("bot-title").textContent = item.source_ip + " · " + item.label;
     metadata("bot-metadata", [
+      ["Website", domainLabel()],
       ["Recommendation", recommendations[item.recommendation]], ["Requests", item.request_count],
       ["First seen (UTC)", time(item.first_seen)], ["Last seen (UTC)", time(item.last_seen)],
-      ["Home page requests", item.home_requests], ["Checkout requests", item.checkout_requests],
-      ["HTML requests", item.html_requests], ["CSS requests", item.css_requests],
-      ["Requests with language preference", item.language_requests],
+      ["Home page requests (neutral)", item.home_requests], ["Checkout requests (neutral)", item.checkout_requests],
+      ["HTML requests (neutral)", item.html_requests], ["Successful CSS requests", item.css_requests],
+      ["Requests with language preference (neutral)", item.language_requests],
       ["Requests with a logged language field", item.language_logged_requests],
       ["Observed languages", item.languages.join(", ") || "Not observed"],
       ["Risk alerts", item.risk_alert_count],
@@ -176,9 +223,41 @@
         button.type = "button";
         button.addEventListener("click", () => openEvent(proof.event_id));
         return button;
-      }) : [element("p", "No successful browsing evidence in this selection.", "muted")]));
+      }) : [element("p", "No successful CSS requests in this selection.", "muted")]));
     if (!$("bot-dialog").open) $("bot-dialog").showModal();
+    loadBotRequests();
   }
+
+  async function loadBotRequests(offset = 0) {
+    const context = state.botRequests;
+    if (!context || context.domainId !== state.domain_id) return;
+    const serial = ++botRequestSerial;
+    message("bot-request-message", "");
+    $("bot-request-count").textContent = "";
+    $("bot-requests").setAttribute("aria-busy", "true");
+    emptyRows("bot-request-rows", "Loading requests…");
+    $("bot-request-pagination").replaceChildren();
+    try {
+      const result = await api("events?" + query({ ...context.filters, limit: PAGE_SIZE, offset }));
+      if (serial !== botRequestSerial || !$("bot-dialog").open || state.botRequests !== context) return;
+      eventRows("bot-request-rows", result.items);
+      $("bot-request-count").textContent = "(" + result.pagination.total.toLocaleString() + ")";
+      pagination("bot-request-pagination", result.pagination, loadBotRequests);
+    } catch (error) {
+      if (serial !== botRequestSerial || !$("bot-dialog").open || state.botRequests !== context) return;
+      message("bot-request-message", error.message);
+      emptyRows("bot-request-rows", "Requests could not be loaded. Select Refresh requests to try again.");
+    } finally {
+      if (serial === botRequestSerial && $("bot-dialog").open) $("bot-requests").setAttribute("aria-busy", "false");
+    }
+  }
+
+  $("refresh-bot-requests").addEventListener("click", () => loadBotRequests());
+  $("bot-dialog").addEventListener("close", () => {
+    if ($("bot-dialog").open) return;
+    ++botRequestSerial;
+    state.botRequests = null;
+  });
 
   function botRows(items, summary) {
     $("bot-confirmed").textContent = summary.by_classification.confirmed_bot.toLocaleString();
@@ -312,6 +391,37 @@
       }
       return;
     }
+    if (view === "comparison") {
+      emptyRows("comparison-rows", "Loading domain comparison…");
+      try {
+        const result = await api("domains/comparison?" + query(state.common));
+        if (serial !== loadSerial) return;
+        $("comparison-rows").replaceChildren(...result.items.map((item) => {
+          const row = element("tr"), site = element("td");
+          site.append(element("strong", item.domain.name),
+            element("span", item.domain.hostname + " · " + item.domain.provider, "row-subtitle"));
+          const categories = item.bots.by_classification;
+          row.append(site, element("td", item.access_requests.toLocaleString()),
+            element("td", item.alerts.total.toLocaleString()),
+            element("td", item.alerts_per_1000_requests ?? "—"),
+            element("td", [categories.confirmed_bot, categories.suspected_bot, categories.not_a_bot].join(" / ")),
+            element("td", item.confirmed_bot_ip_percent ?? "—"));
+          return row;
+        }));
+        $("load-status").textContent = "Domain comparison loaded.";
+      } catch (error) {
+        if (serial === loadSerial) {
+          message("page-message", error.message);
+          emptyRows("comparison-rows", "Comparison could not be loaded. Initialize both site databases with init-db.");
+        }
+      } finally {
+        if (serial === loadSerial) {
+          $("refresh").disabled = false;
+          $("main").setAttribute("aria-busy", "false");
+        }
+      }
+      return;
+    }
     const table = view === "overview" ? "recent-alerts" : view === "alerts" ? "alert-rows" : view === "bots" ? "bot-rows" : "event-rows";
     emptyRows(table, "Loading records…");
     if (view === "overview") {
@@ -369,6 +479,7 @@
     $("alert-title").textContent = item.title;
     $("alert-description").textContent = item.description;
     metadata("alert-metadata", [
+      ["Website", domainLabel()],
       ["Rule", item.rule_id], ["Severity", item.severity], ["Source", source(item)],
       ["Grouping", item.grouping_key], ["First seen (UTC)", item.first_seen],
       ["Last seen (UTC)", item.last_seen], ["Created (UTC)", item.created_at], ["Evidence records", item.event_count],
@@ -447,6 +558,7 @@
       const { item } = await api("events/" + identity);
       if (serial !== eventSerial || !$("event-dialog").open) return;
       metadata("event-metadata", [
+        ["Website", domainLabel()],
         ["Timestamp (UTC)", item.timestamp], ["Log format", item.log_format],
         ["Source", source(item)], ["Source file", item.source_file],
         ["Line number", item.line_number], ["Assumed timezone", item.assumed_timezone],
@@ -491,7 +603,15 @@
 
   function importSummary(summary) {
     $("import-summary").hidden = false;
+    state.importReview = summary.import_id || summary.duplicate_of_import_id;
+    $("review-duplicate-lines").hidden = !state.importReview || !summary.duplicate_lines;
     metadata("import-summary", [
+      ["Website", summary.domain ? summary.domain.name + " (" + summary.domain.provider + ")" : "Not supplied"],
+      ["Outcome", summary.duplicate_file ? "Already imported; no changes" : summary.import_id ? "New import" : "No import saved"],
+      ["Import ID", state.importReview],
+      ...(summary.duplicate_file ? [["Original source", summary.duplicate_of_source_file],
+        ["Duplicate file events skipped", summary.skipped_duplicate_events]] : []),
+      [summary.duplicate_file ? "Repeated lines in original import" : "Repeated lines retained for review", summary.duplicate_lines ?? 0],
       ["Source label", summary.source_file], ["Lines read", summary.lines_read],
       ["Imported events", summary.imported_events], ["Rejected lines", summary.rejected_lines],
       ["Blank lines", summary.blank_lines], ["Malformed lines", summary.malformed_lines],
@@ -503,6 +623,44 @@
       ] : []),
     ]);
   }
+
+  async function loadDuplicateLines(offset = 0) {
+    if (!state.importReview) return;
+    const serial = ++duplicateSerial;
+    message("duplicate-message", "");
+    emptyRows("duplicate-rows", "Loading repeated lines…", 4);
+    $("duplicate-pagination").replaceChildren();
+    try {
+      const result = await api("imports/" + state.importReview + "/duplicates?" + query({ limit: PAGE_SIZE, offset }));
+      if (serial !== duplicateSerial || !$("duplicate-dialog").open) return;
+      $("duplicate-source").textContent = domainLabel() + " · " + result.import.source_file;
+      if (!result.items.length) emptyRows("duplicate-rows", "No repeated lines.", 4);
+      else $("duplicate-rows").replaceChildren(...result.items.map((item) => {
+        const row = element("tr");
+        row.append(element("td", item.original_line_number), element("td", item.line_number));
+        for (const [label, identity] of [["Original record", item.original_event_id], ["Repeated record", item.event_id]]) {
+          const cell = element("td"), button = element("button", label, "text-button");
+          button.type = "button";
+          button.addEventListener("click", () => openEvent(identity));
+          cell.append(button);
+          row.append(cell);
+        }
+        return row;
+      }));
+      pagination("duplicate-pagination", result.pagination, loadDuplicateLines);
+    } catch (error) {
+      if (serial === duplicateSerial && $("duplicate-dialog").open) message("duplicate-message", error.message);
+    }
+  }
+
+  $("review-duplicate-lines").addEventListener("click", () => {
+    $("duplicate-source").textContent = "";
+    $("duplicate-dialog").showModal();
+    loadDuplicateLines();
+  });
+  $("duplicate-dialog").addEventListener("close", () => {
+    if (!$("duplicate-dialog").open) ++duplicateSerial;
+  });
 
   function importBusy(busy) {
     state.importing = busy;
@@ -517,6 +675,7 @@
     const file = $("upload-file").files[0];
     if (!file) return;
     $("import-summary").hidden = true;
+    $("review-duplicate-lines").hidden = true;
     if (file.size > Number(document.body.dataset.maxUploadBytes)) {
       message("import-message", "Apache files must be no larger than 10 MiB.");
       return;
@@ -528,11 +687,15 @@
       const { summary } = await api("imports", {
         method: "POST", headers: { "X-Apache-Upload": "1" }, body,
       });
+      applyDomain(summary.domain_id);
       importSummary(summary);
-      message("import-message", "Imported " + summary.imported_events.toLocaleString() + " events. " +
-        summary.detection.alerts_created + " new alerts, " + summary.detection.alert_updates + " alert updates.", "");
+      message("import-message", summary.duplicate_file
+        ? "Already imported for this website. Skipped " + summary.skipped_duplicate_events + " events; no event or alert changes."
+        : "Imported " + summary.imported_events.toLocaleString() + " events. " +
+          summary.detection.alerts_created + " new alerts, " + summary.detection.alert_updates + " alert updates." +
+          (summary.duplicate_lines ? " " + summary.duplicate_lines + " repeated lines retained for review." : ""), "");
       $("import-form").reset();
-      state.offsets.alerts = state.offsets.events = 0;
+      state.offsets.alerts = state.offsets.events = state.offsets.bots = 0;
       await refresh();
     } catch (error) {
       message("import-message", error.message);
@@ -587,10 +750,14 @@
     refresh();
   });
   $("refresh").addEventListener("click", refresh);
+  $("active-domain").addEventListener("change", () => {
+    applyDomain($("active-domain").value);
+    refresh();
+  });
   $("export-bots").addEventListener("click", async () => {
     $("export-bots").disabled = true;
     try {
-      const response = await fetch("/api/bots/export?" + query(state.common), { cache: "no-store" });
+      const response = await fetch(apiPath("bots/export?" + query(state.common)), { cache: "no-store" });
       if (!response.ok) {
         const body = await response.json();
         throw new Error(body.error?.message || "Export failed.");
@@ -598,7 +765,7 @@
       const url = URL.createObjectURL(await response.blob());
       const link = element("a");
       link.href = url;
-      link.download = "ban-candidates.txt";
+      link.download = state.domain_id === "chronoscrate" ? "ban-candidates.txt" : "ban-candidates-" + state.domain_id + ".txt";
       document.body.append(link);
       link.click();
       link.remove();
@@ -623,6 +790,9 @@
     $("page-description").textContent = titles[view][1];
     document.title = titles[view][0] + " · Apache Analyzer";
     $("common-filters").hidden = view === "rules";
+    $("domain-selector").hidden = view === "comparison";
+    $("bot-site").textContent = $("active-domain").selectedOptions[0].dataset.hostname;
+    $("domain-caption").textContent = "Events, alerts, assessments, and exports are scoped to this website.";
     if ($("event-dialog").open) $("event-dialog").close();
     if ($("bot-dialog").open) $("bot-dialog").close();
     const hasAlert = view === "alerts" && identity && /^[0-9]+$/.test(identity);

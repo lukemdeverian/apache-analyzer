@@ -293,7 +293,7 @@ def test_empty_database_has_empty_pages_and_defined_statistics(api_store):
     assert stats["alerts"]["by_rule_id"] == {}
 
 
-def test_rules_describe_all_eleven_defaults_without_creating_storage(tmp_path):
+def test_rules_describe_all_twelve_defaults_without_creating_storage(tmp_path):
     database = tmp_path / "missing" / "api.sqlite3"
     app = create_app({"TESTING": True, "DATABASE_PATH": str(database)})
     response = app.test_client().get("/api/rules")
@@ -306,7 +306,7 @@ def test_rules_describe_all_eleven_defaults_without_creating_storage(tmp_path):
     assert catalog["request_correlation_seconds"] == 300
     items = {item["rule_id"]: item for item in catalog["items"]}
     assert set(items) == {rule.rule_id for rule in engine.rules}
-    assert len(items) == 11
+    assert len(items) == 12
     assert items["APACHE-PATH-ENUMERATION"]["settings"] == {
         "threshold": 10, "window_seconds": 300, "min_distinct_paths": 5,
     }

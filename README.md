@@ -5,6 +5,9 @@ It accepts plain or gzip-compressed Apache access and error log files, stores
 evidence in SQLite, detects
 suspicious activity and server issues, and presents alerts in a local dashboard.
 It runs directly on Python without Docker or a database server.
+Uploads support Chronoscrate (`chronoscrate.xyz`, Dynadot) and La Jolla Seals
+(`protectlajollaseals.xyz`, Namecheap), with independent analysis and a domain
+comparison view. See the [two-domain guide](docs/MULTI_DOMAIN.md).
 The implementation is written specifically for this repository, using
 Nightwatch's separation of parsing, storage, detection, and presentation as a reference.
 
@@ -20,7 +23,8 @@ if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe run.py
 ```
 
-Open <http://127.0.0.1:5000/> for the dashboard. The health check is available
+Initialization covers both website databases and preserves existing Chronoscrate
+data. Open <http://127.0.0.1:5000/> for the dashboard. The health check is available
 at <http://127.0.0.1:5000/health>:
 
 ```json
@@ -53,7 +57,7 @@ this directory. Settings are read when the app is created.
 | `APP_HOST` | `127.0.0.1` | Local listening address |
 | `APP_PORT` | `5000` | Listening port, from 1 through 65535 |
 | `APP_DEBUG` | `false` | Development debugger and automatic reload |
-| `DATABASE_PATH` | `apache_analyzer.sqlite3` | Local SQLite file; relative paths resolve under `instance/` |
+| `DATABASE_PATH` | `apache_analyzer.sqlite3` | Chronoscrate SQLite file; relative paths resolve under `instance/`. The second site's file adds `__la_jolla_seals` before the extension. |
 
 Debug values accept `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`,
 case-insensitively. Invalid settings stop startup with a named validation error.
@@ -67,12 +71,12 @@ dashboard uses bundled HTML, CSS, and JavaScript; no Node.js installation,
 frontend build, or external assets are needed to run the application.
 
 1. Select **Import logs**, choose a UTF-8 Apache log or a gzip (`.gz`) file, and
-   explicitly
-   select **Apache access log** or **Apache error log**. For error logs, enter
+   explicitly choose the **Website** and **Apache access log** or **Apache error log**. For error logs, enter
    the server's fixed UTC offset, such as `-07:00`, or leave `UTC`.
 2. Select **Import and analyze**. The summary shows imported records, blank and
    rejected lines, new alerts, and correlated alert updates. The overview refreshes
-   after a successful import. Reimporting adds another copy of the file's events.
+   after a successful import. Already imported files are skipped per website;
+   repeated lines inside a new file are retained and flagged for review.
 3. Browse **Alerts** and filter by status, severity, or rule. Open an alert to
    review detection details and its linked evidence, then save an analyst status.
 4. Select **View record** to inspect the raw log, source label, line number,
@@ -85,7 +89,7 @@ timestamps. The overview includes all analyst statuses in the selected history;
 its open-alert count includes new and investigating alerts. Alert-specific
 filters affect the alert list. **Clear** resets all filters. Lists and linked
 evidence use 25-record pages; **Refresh** picks up changes made through the CLI.
-**Detection rules** describes all 11 built-in defaults. Alert details can also
+**Detection rules** describes all 12 built-in defaults. Alert details can also
 be opened directly using a URL such as `/#alerts/1`, including former merged IDs.
 
 Browser files are limited to 10 MiB, with an additional 64 KiB allowance for
@@ -112,24 +116,34 @@ or upgrade storage automatically.
 
 ## Assess bot traffic
 
-Open **Bot traffic** to review IPs against the Chronos Crate browsing policy:
+Choose a website, then open **Bot traffic** to review its IPs against the CSS policy:
 
 | Category | Policy | Action |
 | --- | --- | --- |
 | Confirmed bot | Any IP-attributed risk alert, excluding false positives | Review for blocking |
 | Suspected bot | Insufficient normal browsing evidence and no qualifying risk alert | Monitor or challenge |
-| Not a bot | Successful GET of `/` or `/checkout`, or a language + HTML + CSS sequence, with no qualifying risk alert | Allow and monitor |
+| Not a bot | Successful CSS request, with no qualifying risk alert | Allow and monitor |
 
 Risk alerts take priority over normal browsing. Labels are rule-based assessments,
 not proof of automation or humanity. Server-wide alerts do not assign blame to
-individual visitors. Existing imported logs work without reimporting or migrating
-the database. Language signals require an extended combined log that includes
-the language header; missing headers are not treated as proof of bot activity.
+individual visitors. After the required schema upgrade, existing imported logs
+work without reimporting. HTML, home/checkout visits, and language preferences are neutral
+context. Successful CSS requests qualify without HTML or a language header.
+Missing CSS alone does not justify blocking an IP.
 
-Use **Review IP** for reasons and evidence links, and **Export ban candidates**
+Use **Review IP** for reasons and evidence links. All classifications, including
+suspected bots with no alerts, show a paginated request history with raw-record
+links, scoped to the selected website, IP, and UTC date range.
+Use **Export ban candidates**
 to download confirmed IPs matching the shared IP/date filters. The export is for
 review and does not apply a block. See the [bot traffic guide](docs/BOT_TRAFFIC.md)
 for criteria, logging configuration, sample data, limitations, and APIs.
+
+The website selector scopes every investigation and export. **Domain comparison**
+compares both sites with shared IP/date filters, showing counts and normalized
+rates. Provider labels are supplied metadata; differences do not establish DNS
+or provider causality. Existing imports remain under Chronoscrate. See
+[multi-domain setup and isolation](docs/MULTI_DOMAIN.md).
 
 ## Import Apache log files
 
@@ -197,18 +211,24 @@ The successful summary reports:
 | `oversized_lines` | Lines larger than the chosen byte limit |
 | `invalid_value_lines` | Parsed values that cannot be represented in storage, such as oversized integers |
 | `rejected_lines` | Total malformed, encoding-error, oversized, and invalid-value lines |
+| `duplicate_file` | File was already represented; no new events or detection writes |
+| `skipped_duplicate_events` | Accepted events skipped for an already imported file |
+| `duplicate_lines` | Repeated occurrences retained within the saved/original import |
 
 Add `--json` to print the successful summary as JSON. It also contains
 `source_file`, `log_type`, `assumed_timezone`, and a nested `detection` summary.
 Blank and rejected lines are
-skipped; an import must contain at least one usable Apache record to succeed.
+skipped; a new import must contain at least one usable Apache record to succeed.
 An empty file, a wrong format choice, or unrelated log content produces a
 nonzero exit code with a rejection summary.
 
 Each file and its detection scan are saved in a single transaction. A file-read,
 detector, or database failure rolls back that import's events and all alert/evidence
 creations, updates, and merges from the scan. Earlier imports remain intact.
-Repeating a successful import appends new events, which count as fresh evidence.
+Repeating a successful import is a no-op, even after renaming or gzip wrapping.
+Identical lines within a new file remain separate events and are flagged, with
+links to both occurrences. See [duplicate prevention](docs/DUPLICATE_IMPORTS.md)
+for fingerprints, legacy recognition, API fields, and partial-overlap limits.
 Collection is batch-oriented: the importer reads to EOF and does not follow
 log rotation. Each scan replays all stored evidence in timestamp order, so late
 imports can complete earlier detection windows. Scan time therefore grows with
@@ -244,10 +264,12 @@ Flask application context. Initialize the configured database with:
 ```
 
 This creates the database file, parent directory, tables, and indexes. Schema
-version 2 adds `alert_merges` to retain references to combined alert IDs.
-For an owned version 1 database, the same command upgrades it atomically while
-preserving events, alerts, statuses, and evidence links. Run it once when updating
-from increment 6 or earlier. Repeating it preserves existing data. A failed upgrade
+version 3 adds the `imports` and `import_lines` fingerprint/review registry;
+version 2 introduced `alert_merges` for combined alert IDs.
+For an owned version 1 or 2 database, the same command upgrades it atomically
+while preserving events, alerts, statuses, and evidence links. Run it once after
+updating to duplicate prevention. Existing duplicates are not deleted.
+Repeating it preserves existing data. A failed upgrade
 rolls back the new schema and version together. The application identifier and
 version marker reject unrelated, unrecognized, and unsupported databases.
 
@@ -313,7 +335,7 @@ and demo targets. [Demo evidence ranges](examples/README.md) and the
 [expected-results manifest](examples/expected.json) make the defaults reproducible.
 
 The detector scans stored Apache access and error records and returns findings
-for eleven rule types. These four behavioral thresholds apply to one logged IP
+for twelve rule types. These four behavioral thresholds apply to one logged IP
 in a rolling window:
 
 | Rule ID | Condition | Default threshold / window | Severity |
@@ -347,6 +369,7 @@ Seven additional rules inspect individual requests or server-wide bursts:
 | `APACHE-XSS` | Script tags, HTML event-handler attributes, or JavaScript URIs in a path or query | One matching request | High |
 | `APACHE-SENSITIVE-FILE` | Configuration, credential, repository, database, or backup paths | One matching request | Medium |
 | `APACHE-UNUSUAL-METHOD` | A method outside the configured expected set | One matching request | Medium |
+| `APACHE-WORDPRESS-PROBE` | Unexpected WordPress installer, administration, login, or XML-RPC entry points | One matching request, including 404 responses | High |
 | `APACHE-SERVER-ERRORS` | HTTP 500-599 access responses across clients | 20 responses / 60 seconds | High |
 | `APACHE-ERROR-BURST` | Apache `error`, `crit`, `alert`, or `emerg` records across modules and clients | 10 records / 60 seconds | High |
 
@@ -460,8 +483,8 @@ engine = DetectionEngine(allowed_methods=DEFAULT_ALLOWED_METHODS | {"PROPFIND", 
 
 The method collection must contain valid, nonempty HTTP method tokens.
 The detector groups across imported files in the same database, so use logs from
-the same server context. Reimporting a file adds duplicate evidence that also
-counts toward detection thresholds.
+the same server context. Repeated files do not add evidence or increase thresholds;
+identical requests retained inside a new file still count toward detection.
 
 ## Alert correlation and investigation
 
@@ -532,7 +555,7 @@ for callers who only want to inspect findings.
 
 Run `init-db`, import Apache files through the CLI, and start `run.py` before
 querying the APIs at <http://127.0.0.1:5000>. This increment uses the existing
-version 2 database schema; no new migration is required.
+current version 3 schema; init-db upgrades owned version 1 or 2 databases without data loss.
 
 | Method | Endpoint | Result |
 | --- | --- | --- |
@@ -542,7 +565,7 @@ version 2 database schema; no new migration is required.
 | GET | `/api/alerts/<id>` | One alert in `item`, plus `requested_id` |
 | GET | `/api/alerts/<id>/events` | Paginated chronological evidence for an alert |
 | PATCH | `/api/alerts/<id>/status` | Persist an analyst status and return the updated alert |
-| GET | `/api/rules` | All 11 default rule definitions and their settings |
+| GET | `/api/rules` | All 12 default rule definitions and their settings |
 | GET | `/api/stats` | Event and alert totals, date ranges, and grouped counts |
 | POST | `/api/imports` | Import one Apache file and return its analysis summary |
 
@@ -649,7 +672,7 @@ logged locally and omitted from error responses. Investigation responses use
 ### Upload API
 
 `POST /api/imports` accepts `multipart/form-data` with exactly one `file`, a
-required `log_type=access|error`, and an optional `error_timezone=UTC` or signed
+required `domain_id=chronoscrate|la_jolla_seals` and `log_type=access|error`, and an optional `error_timezone=UTC` or signed
 fixed UTC offset. It uses the built-in detection defaults. Send the header
 `X-Apache-Upload: 1`; the dashboard does this automatically. If an `Origin`
 header is present, it must match the application's origin. Cross-origin access
@@ -657,17 +680,21 @@ is not enabled. No query parameters or server-side file paths are accepted.
 
 ```powershell
 curl.exe -H 'X-Apache-Upload: 1' `
-  -F 'file=@C:\logs\access.log' -F 'log_type=access' `
+  -F 'file=@C:\logs\access.log' -F 'domain_id=chronoscrate' -F 'log_type=access' `
   http://127.0.0.1:5000/api/imports
 ```
 
-A successful import returns 201 with a `summary` object containing the same
+A new import returns 201 with a `summary` object containing the same
 line counts and nested `detection` counters as the CLI JSON output. Its
 `source_file` is the persistent upload label. A file without usable records
 returns 422 with `error.code: "no_apache_records"` and a `summary` containing
 rejection counts. Invalid form fields return 400, a missing upload header or
 foreign origin returns 403, oversized files/forms return 413, and a non-multipart
 body returns 415. Database failures retain the investigation API's 503 behavior.
+Already imported files return 200 with `summary.duplicate_file: true`, zero
+imported events and detection writes, and the original import reference.
+`GET /api/imports/<id>/duplicates` exposes retained repeated-line evidence with
+`domain_id`, `limit`, and `offset` filters. See [the duplicate guide](docs/DUPLICATE_IMPORTS.md).
 Gzip files use the same multipart fields and require no compression flag.
 Invalid or truncated gzip returns 422 with `error.code: "invalid_gzip"`;
 content over the 100 MiB decompressed limit returns 413 with
@@ -705,7 +732,7 @@ can contain spaces and Apache escapes; bare values must be nonempty and contain
 no whitespace or double quotes. These records have `log_format` set to
 `extended_combined`. Extra fields remain in the full raw evidence and do not
 override core fields. Bot assessments read language and fetch-destination fields;
-the eleven security rules keep their existing inputs. Incomplete quotes, unnamed
+the twelve alert rules keep language preferences neutral. Incomplete quotes, unnamed
 trailing data, and named fields without both combined fields are rejected.
 Apache supports such custom suffixes through
 [`LogFormat`](https://httpd.apache.org/docs/2.4/mod/mod_log_config.html#logformat).

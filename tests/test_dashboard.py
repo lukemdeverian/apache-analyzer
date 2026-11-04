@@ -27,7 +27,7 @@ def workspace(tmp_path):
 
 
 def upload(client, content=ACCESS, *, filename="access.log", log_type="access", extra=None, headers=None):
-    data = {"file": (io.BytesIO(content), filename), "log_type": log_type, **(extra or {})}
+    data = {"file": (io.BytesIO(content), filename), "log_type": log_type, "domain_id": "chronoscrate", **(extra or {})}
     return client.post("/api/imports", data=data, headers=HEADERS if headers is None else headers)
 
 
@@ -203,16 +203,22 @@ def test_error_upload_respects_server_timezone_and_severe_error_detection(worksp
     no_temporary_files(app)
 
 
-def test_reimport_has_unique_provenance_and_correlates_existing_alert(workspace):
+def test_reimport_is_skipped_and_references_original_provenance(workspace):
     app, store = workspace
     client = app.test_client()
     first = upload(client).json["summary"]
-    second = upload(client).json["summary"]
+    before = list(store.connection.iterdump())
+    response = upload(client)
+    assert response.status_code == 200
+    second = response.json["summary"]
     assert first["source_file"] != second["source_file"]
-    assert store.count_events() == 2 and store.count_alerts() == 1
+    assert store.count_events() == store.count_alerts() == 1
     assert first["detection"]["alerts_created"] == 1
-    assert second["detection"]["alerts_created"] == 0 and second["detection"]["alert_updates"] == 1
-    assert store.list_alerts()[0].event_count == 2
+    assert second["detection"]["alerts_created"] == second["detection"]["alert_updates"] == 0
+    assert second["duplicate_file"] and second["duplicate_of_import_id"] == first["import_id"]
+    assert second["duplicate_of_source_file"] == first["source_file"]
+    assert store.list_alerts()[0].event_count == 1
+    assert list(store.connection.iterdump()) == before
     no_temporary_files(app)
 
 
@@ -324,6 +330,8 @@ def test_import_form_validation_precedes_database_and_temporary_file_access(work
 ])
 def test_missing_or_duplicate_import_fields_are_rejected(workspace, data):
     app, store = workspace
+    data = data.copy()
+    data["domain_id"] = "chronoscrate"
     response = app.test_client().post("/api/imports", data=data, headers=HEADERS,
                                      content_type="multipart/form-data")
     assert response.status_code == 400 and response.is_json
@@ -397,7 +405,7 @@ def test_failure_after_detection_rolls_back_import_alert_updates_and_temp_file(w
         raise sqlite3.OperationalError("Synthetic failure after analysis")
 
     monkeypatch.setattr(uploads, "analyze_file", fail_after_detection)
-    response = upload(client)
+    response = upload(client, ACCESS.replace(b"09:00:00", b"09:00:01"))
     assert response.status_code == 503 and "Synthetic failure" not in response.get_data(as_text=True)
     assert list(store.connection.iterdump()) == before
     assert copied and all(not path.exists() for path in copied)

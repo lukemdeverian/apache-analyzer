@@ -2,9 +2,9 @@
 
 IP-level bot categories combine these risk alerts with site-browsing signals.
 See [Bot traffic assessments](BOT_TRAFFIC.md) for the policy, evidence, and
-developer review/export workflow. The eleven alert rules below are unchanged.
+developer review/export workflow. The catalog below lists the current rules.
 
-Apache Analyzer has 11 built-in rules. Alerts identify evidence for review;
+Apache Analyzer has 12 built-in rules. Alerts identify evidence for review;
 request signatures do not establish that a request succeeded. The catalog
 returned by `GET /api/rules` and shown in the dashboard describes these defaults.
 Custom Python engine settings apply only to the caller that uses them.
@@ -32,7 +32,8 @@ on one path do not increase the distinct-path count.
 Each parsed matching request produces a finding regardless of its response
 status. Inspection checks the original path/query and up to two percent-decoding
 passes without modifying stored evidence. These examples are recorded strings
-from [demo_access.txt](../examples/demo_access.txt), not requests to execute.
+from [demo_access.txt](../examples/demo_access.txt) and
+[wordpress_probes.txt](../examples/wordpress_probes.txt), not requests to execute.
 
 | Rule ID | Match | Demo target or method | Severity | Review context |
 | --- | --- | --- | --- | --- |
@@ -41,12 +42,39 @@ from [demo_access.txt](../examples/demo_access.txt), not requests to execute.
 | `APACHE-XSS` | Script tags, HTML event-handler attributes, or JavaScript URIs | `/?q=%3Cscript%3EDEMO%3C%2Fscript%3E` | High | Check whether the input was reflected or rendered elsewhere; access logs do not contain the response body. |
 | `APACHE-SENSITIVE-FILE` | Known configuration, credential, repository, database, and backup path components or suffixes | `/.env` | Medium | Check whether the resource is intentionally public. Query mentions of a filename do not qualify. |
 | `APACHE-UNUSUAL-METHOD` | A parsed method outside the configured expected set | `TRACE / HTTP/1.1` | Medium | Check WebDAV, proxy, or application methods that the server intentionally accepts. |
+| `APACHE-WORDPRESS-PROBE` | Unexpected WordPress installation, administration, login, or XML-RPC entry points | `/wp-admin/install.php?step=1` | High | One request is enough, even with a 404 response, language headers, or CSS activity. Check whether WordPress is expected on the selected site. |
 
 Expected methods are GET, HEAD, POST, PUT, DELETE, PATCH, and OPTIONS;
 comparisons are case-sensitive. Request signatures group by logged IP, otherwise
 logged hostname, otherwise an unattributed group. Their default correlation gap
 is 300 seconds. More than one signature can link the same event to different
 alerts. XSS inspection also decodes bounded HTML entity references.
+
+WordPress-probe matching uses the actual path only, with case-insensitive
+components and up to two percent-decoding passes. It recognizes bare `wp-admin`
+entry paths, `wp-admin/install.php`, `setup-config.php`, `upgrade.php`, `admin.php`,
+and `index.php`, plus `wp-login.php` and `xmlrpc.php`, including subdirectory
+installations. It does not flag ordinary `wp-content`/`wp-admin/css` assets,
+`admin-ajax.php`, query-string mentions, referrer text, or user-agent text solely
+for mentioning these URLs. Raw evidence remains unchanged.
+
+These endpoints are unexpected under the study sites' policy; they are not
+universally malicious. WordPress documents legitimate use of its
+[installation script](https://developer.wordpress.org/advanced-administration/before-install/howto-install/).
+If WordPress is intentionally hosted, review these alerts for false positives.
+Any non-false-positive IP-attributed probe alert overrides CSS observations in
+Bot traffic. Language preferences are neutral and never exempt a probe.
+
+To apply a new detector to existing events, rescan rather than reimport:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app detect --domain chronoscrate --json
+.\.venv\Scripts\python.exe -m flask --app app detect --domain la_jolla_seals --json
+```
+
+Restart the application to use updated detectors for future imports. These scans
+reuse stored events and preserve analyst decisions; duplicate-file imports do
+not substitute for explicit rescanning.
 
 Sensitive paths include `.git`, `.svn`, `.hg`, `.env` variants, `.htaccess`,
 `.htpasswd`, `wp-config.php`, `config.php`, `web.config`, `id_rsa`, and

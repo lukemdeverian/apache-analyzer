@@ -1,6 +1,7 @@
 """Stream explicitly selected Apache log files into local event storage."""
 
 import gzip
+import hashlib
 import os
 import re
 import stat
@@ -14,6 +15,9 @@ from typing import BinaryIO
 
 from app.database import transaction
 from app.events import ApacheLogType
+from app.import_history import (
+    duplicate_line_page, find_duplicate_import, finish_import, record_import_event, start_import,
+)
 from app.parsers import parse_apache_line
 from app.storage import SQLiteStore
 
@@ -45,6 +49,13 @@ class ImportSummary:
     encoding_error_lines: int
     oversized_lines: int
     invalid_value_lines: int
+    import_id: int | None = None
+    duplicate_file: bool = False
+    duplicate_of_import_id: int | None = None
+    duplicate_of_source_file: str | None = None
+    skipped_duplicate_events: int = 0
+    duplicate_lines: int = 0
+    duplicate_line_samples: tuple[dict, ...] = ()
 
     @property
     def rejected_lines(self) -> int:
@@ -53,7 +64,7 @@ class ImportSummary:
             + self.oversized_lines + self.invalid_value_lines
         )
 
-    def as_dict(self) -> dict[str, str | int | None]:
+    def as_dict(self) -> dict[str, object]:
         return {**asdict(self), "rejected_lines": self.rejected_lines}
 
 
@@ -67,6 +78,23 @@ class NoApacheRecordsError(ValueError):
             f"Read {summary.lines_read} lines: {summary.rejected_lines} rejected, "
             f"{summary.blank_lines} blank. Check the file content and --format."
         )
+
+
+class _DuplicateImport(Exception):
+    def __init__(self, original):
+        self.original = dict(original)
+
+
+class _HashingReader:
+    """Hash every decompressed byte, including drained and rejected records."""
+
+    def __init__(self, stream, fingerprint):
+        self.stream, self.fingerprint = stream, fingerprint
+
+    def readline(self, size):
+        chunk = self.stream.readline(size)
+        self.fingerprint.update(chunk)
+        return chunk
 
 
 def parse_error_timezone(value: str) -> timezone:
@@ -143,7 +171,8 @@ def ingest_file(
     Malformed, oversized, invalid UTF-8, and out-of-range numeric records are
     counted and skipped. Read/storage failures roll back this entire import.
     At least one supported record must be stored for the import to succeed.
-    Repeating an import creates additional events; file deduplication is absent.
+    Repeated files are no-ops; identical records within a file are retained and
+    flagged for review. Fingerprints and events share the import transaction.
     source_label overrides file provenance for a caller-owned temporary file.
     Gzip is detected by content, streamed with bounded reads, and checked to EOF.
     max_decompressed_bytes includes every decompressed byte, even rejected lines.
@@ -167,50 +196,86 @@ def ingest_file(
         "lines_read": 0, "imported_events": 0, "blank_lines": 0,
         "malformed_lines": 0, "encoding_error_lines": 0, "oversized_lines": 0,
         "invalid_value_lines": 0,
+        "duplicate_lines": 0,
     }
+    import_id = None
+    line_samples = ()
+    content_fingerprint, records_fingerprint = hashlib.sha256(), hashlib.sha256()
 
     def summary() -> ImportSummary:
         return ImportSummary(
             source_file=provenance, log_type=log_type,
             assumed_timezone=str(error_timezone) if log_type == "error" else None,
+            import_id=import_id, duplicate_line_samples=line_samples,
             **counts,
         )
 
-    with transaction(store.connection):
-        with _open_log(source, max_decompressed_bytes) as (stream, total_limit):
-            for line_number, raw_line in _bounded_lines(
-                stream, max_line_bytes, max_total_bytes=total_limit,
-            ):
-                counts["lines_read"] += 1
-                if raw_line is None:
-                    counts["oversized_lines"] += 1
-                    continue
-                try:
-                    text = raw_line.decode("utf-8")
-                except UnicodeDecodeError:
-                    counts["encoding_error_lines"] += 1
-                    continue
-                # A file's UTF-8 signature is not part of the first logged host.
-                # Keep it in raw evidence while removing it for parsing only.
-                parse_text = text.removeprefix("\ufeff") if line_number == 1 else text
-                if not parse_text.strip():
-                    counts["blank_lines"] += 1
-                    continue
-                event = parse_apache_line(
-                    parse_text, log_type, source_file=provenance, line_number=line_number,
-                    error_timezone=error_timezone,
-                )
-                if event is None:
-                    counts["malformed_lines"] += 1
-                    continue
-                if parse_text != text:
-                    event = replace(event, raw_log=text.removesuffix("\n").removesuffix("\r"))
-                try:
-                    store.insert_event(event)
-                except ValueError:
-                    counts["invalid_value_lines"] += 1
-                    continue
-                counts["imported_events"] += 1
+    try:
+        with transaction(store.connection):
+            pending_id = start_import(
+                store.connection, provenance, log_type,
+                str(error_timezone) if log_type == "error" else None, max_line_bytes,
+            )
+            with _open_log(source, max_decompressed_bytes) as (stream, total_limit):
+                for line_number, raw_line in _bounded_lines(
+                    _HashingReader(stream, content_fingerprint), max_line_bytes, max_total_bytes=total_limit,
+                ):
+                    counts["lines_read"] += 1
+                    if raw_line is None:
+                        counts["oversized_lines"] += 1
+                        continue
+                    try:
+                        text = raw_line.decode("utf-8")
+                    except UnicodeDecodeError:
+                        counts["encoding_error_lines"] += 1
+                        continue
+                    # Preserve the signature in evidence, not in the parsed host.
+                    parse_text = text.removeprefix("\ufeff") if line_number == 1 else text
+                    if not parse_text.strip():
+                        counts["blank_lines"] += 1
+                        continue
+                    event = parse_apache_line(
+                        parse_text, log_type, source_file=provenance, line_number=line_number,
+                        error_timezone=error_timezone,
+                    )
+                    if event is None:
+                        counts["malformed_lines"] += 1
+                        continue
+                    if parse_text != text:
+                        event = replace(event, raw_log=text.removesuffix("\n").removesuffix("\r"))
+                    try:
+                        event_id = store.insert_event(event)
+                    except ValueError:
+                        counts["invalid_value_lines"] += 1
+                        continue
+                    digest, repeated = record_import_event(store.connection, pending_id, event_id, event.raw_log)
+                    records_fingerprint.update(digest)
+                    counts["duplicate_lines"] += repeated
+                    counts["imported_events"] += 1
+            original = find_duplicate_import(
+                store.connection, pending_id, log_type,
+                content_fingerprint.hexdigest(), records_fingerprint.hexdigest(),
+            )
+            if original is not None:
+                raise _DuplicateImport(original)
             if counts["imported_events"] == 0:
                 raise NoApacheRecordsError(summary())
+            finish_import(
+                store.connection, pending_id, records_fingerprint.hexdigest(), counts,
+                content_fingerprint.hexdigest(),
+            )
+            import_id = pending_id
+            line_samples = tuple(duplicate_line_page(store.connection, pending_id))
+    except _DuplicateImport as duplicate:
+        # The savepoint removed tentative events, flags, and registry entries.
+        # Return only stable IDs from the original successful import.
+        original = duplicate.original
+        skipped = counts["imported_events"]
+        counts["imported_events"] = 0
+        counts["duplicate_lines"] = original["duplicate_lines"]
+        line_samples = tuple(duplicate_line_page(store.connection, original["id"]))
+        return replace(
+            summary(), duplicate_file=True, duplicate_of_import_id=original["id"],
+            duplicate_of_source_file=original["source_file"], skipped_duplicate_events=skipped,
+        )
     return summary()

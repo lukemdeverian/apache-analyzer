@@ -413,15 +413,17 @@ def test_import_respects_the_callers_outer_transaction(store, tmp_path):
     assert store.count_events() == 0
 
 
-def test_repeating_an_import_appends_events(store, tmp_path):
+def test_repeating_an_import_is_a_noop(store, tmp_path):
     source = tmp_path / "access.txt"
     source.write_bytes(LINE)
 
     first = ingest_file(source, "access", store)
     second = ingest_file(source, "access", store)
 
-    assert first.imported_events == second.imported_events == 1
-    assert store.count_events() == 2
+    assert first.imported_events == 1 and second.imported_events == 0
+    assert second.duplicate_file and second.duplicate_of_import_id == first.import_id
+    assert second.skipped_duplicate_events == 1
+    assert store.count_events() == 1
 
 
 def test_missing_files_and_directories_are_rejected(store, tmp_path):

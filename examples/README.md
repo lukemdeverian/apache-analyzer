@@ -52,12 +52,20 @@ zero alerts**. Loading them before the two demo files produces **208 events
 and the same 11 demo alerts**.
 
 These counts assume each file is imported once with the built-in defaults.
-Repeating an import adds events and can extend alerts or meet additional
-thresholds. Repeating detection without adding events leaves existing alerts
+Repeating an unchanged import is skipped without adding events or changing
+alerts. Different or partially overlapping files can still add events.
+Repeating detection without adding events leaves existing alerts
 and analyst statuses unchanged.
 
 For the separate bot workflow, import [bot_traffic.txt](bot_traffic.txt) into a
 fresh database as an access log. Eight events produce one alert and five IP
 assessments: **one confirmed bot, two suspected bots, and two Not a bot**.
+The home-only visitor (.202) is suspected, while both CSS-fetching visitors
+(.203 and .205) are Not a bot. HTML and language do not affect the category.
 The [bot traffic guide](../docs/BOT_TRAFFIC.md) explains the expected evidence
 and export. This sample is separate from the original 195-event demo.
+
+[wordpress_probes.txt](wordpress_probes.txt) separately demonstrates the new
+WordPress-probe rule: **3 events, 1 high-severity alert**, with one confirmed IP
+despite its CSS/language activity and one normal CSS-only IP. A 404 installer
+request still triggers the alert. It does not change the original demo manifest.

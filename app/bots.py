@@ -1,4 +1,4 @@
-"""Explainable IP assessments for imported Chronos Crate Apache evidence."""
+"""Explainable IP assessments within one website's imported Apache evidence."""
 
 import re
 from dataclasses import dataclass, field
@@ -12,8 +12,7 @@ from app.storage import SQLiteStore
 SITE_HOST = "chronoscrate.xyz"
 CLASSIFICATIONS = ("confirmed_bot", "suspected_bot", "not_a_bot")
 CLASSIFICATION_LABELS = dict(zip(CLASSIFICATIONS, ("Confirmed bot", "Suspected bot", "Not a bot")))
-NORMAL_PAGES = ("/", "/checkout")
-BROWSING_WINDOW_SECONDS = 300
+TRACKED_PAGES = ("/", "/checkout")
 SAMPLE_LIMIT = 10
 _LANGUAGE = re.compile(
     r"(?P<tag>[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*)"
@@ -21,12 +20,13 @@ _LANGUAGE = re.compile(
 )
 
 
-def policy() -> dict:
+def policy(hostname: str = SITE_HOST) -> dict:
     return {
-        "website": "https://" + SITE_HOST,
-        "normal_pages": list(NORMAL_PAGES),
+        "website": "https://" + hostname,
+        "tracked_pages": list(TRACKED_PAGES),
         "classifications": CLASSIFICATION_LABELS,
-        "browsing_window_seconds": BROWSING_WINDOW_SECONDS,
+        "normal_signal": "Successful GET of a CSS resource (2xx or 304).",
+        "neutral_signals": ["html", "home_page", "checkout", "language"],
         "risk_policy": "Any IP-attributed risk alert except false positives overrides browsing signals.",
         "interpretation": "Rule-based labels describe observed history; they do not prove automation or humanity.",
         "scope": "Import this site's logs. Standard Apache layouts do not include the requested host.",
@@ -47,7 +47,7 @@ def _languages(fields: dict[str, str]) -> tuple[bool, list[str]]:
     return True, languages
 
 
-def _site_path(target: str | None, path: str | None) -> str | None:
+def _site_path(target: str | None, path: str | None, hostname: str) -> str | None:
     if not target or any(ord(char) < 33 or ord(char) == 127 for char in target):
         return None
     if re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", target):
@@ -55,7 +55,7 @@ def _site_path(target: str | None, path: str | None) -> str | None:
             address = urlsplit(target)
             if (
                 address.scheme.lower() not in ("http", "https")
-                or address.hostname != SITE_HOST or address.username is not None
+                or address.hostname != hostname or address.username is not None
                 or address.password is not None or address.port not in (None, 80, 443)
             ):
                 return None
@@ -79,29 +79,23 @@ class _Profile:
     language_logged_requests: int = 0
     language_requests: int = 0
     languages: set[str] = field(default_factory=set)
-    recent_signals: dict[str, tuple[datetime, int]] = field(default_factory=dict)
-    browser_asset_sequence: bool = False
     browsing_evidence: dict[str, int] = field(default_factory=dict)
     risk_alert_count: int = 0
     risk_alerts: list[dict] = field(default_factory=list)
 
     def result(self) -> dict:
-        normal = bool(self.home_requests or self.checkout_requests or self.browser_asset_sequence)
+        normal = bool(self.css_requests)
         classification = "confirmed_bot" if self.risk_alert_count else "not_a_bot" if normal else "suspected_bot"
         reasons = []
         if self.risk_alert_count:
             reasons.append(f"{self.risk_alert_count} IP-attributed risk alert(s), excluding false positives.")
-        if self.home_requests:
-            reasons.append("Successfully requested the home page.")
-        if self.checkout_requests:
-            reasons.append("Successfully requested /checkout.")
-        if self.browser_asset_sequence:
-            reasons.append("Requested a language preference, HTML, and CSS within five minutes.")
+        if self.css_requests:
+            reasons.append("Successfully requested CSS.")
         if self.risk_alert_count and normal:
             reasons.append("Risk alerts take priority over normal browsing signals.")
         if classification == "suspected_bot":
-            reasons.append("No successful visit to / or /checkout, or matching language + HTML + CSS sequence.")
-            reasons.append("Insufficient normal browsing evidence; review before considering a block.")
+            reasons.append("No successful CSS request in the selected history.")
+            reasons.append("HTML, page visits, and language preferences are neutral; review before considering a block.")
         return {
             "source_ip": self.source_ip, "classification": classification,
             "label": CLASSIFICATION_LABELS[classification],
@@ -115,7 +109,6 @@ class _Profile:
             "css_requests": self.css_requests, "language_requests": self.language_requests,
             "language_logged_requests": self.language_logged_requests,
             "languages": sorted(self.languages),
-            "browser_asset_sequence": self.browser_asset_sequence,
             "browsing_evidence": [
                 {"signal": signal, "event_id": identity} for signal, identity in self.browsing_evidence.items()
             ],
@@ -126,6 +119,7 @@ class _Profile:
 def assess_bots(
     store: SQLiteStore, *, source_ip: str | None = None,
     start: datetime | None = None, end: datetime | None = None,
+    hostname: str = SITE_HOST,
 ) -> tuple[list[dict], dict]:
     """Derive assessments from current evidence and analyst decisions; never ban."""
     profiles: dict[str, _Profile] = {}
@@ -151,7 +145,7 @@ def assess_bots(
         for language in languages:
             if len(profile.languages) < SAMPLE_LIMIT:
                 profile.languages.add(language)
-        path = _site_path(event.request_target, event.path)
+        path = _site_path(event.request_target, event.path, hostname)
         success = event.status_code is not None and (200 <= event.status_code < 300 or event.status_code == 304)
         if event.method != "GET" or not success or path is None:
             continue
@@ -162,17 +156,8 @@ def assess_bots(
         profile.checkout_requests += checkout
         profile.html_requests += html
         profile.css_requests += css
-        for signal, observed in (("home_page", home), ("checkout", checkout), ("html", html), ("css", css), ("language", bool(languages))):
-            if observed:
-                profile.browsing_evidence.setdefault(signal, item.id)
-                if signal in ("html", "css", "language"):
-                    profile.recent_signals[signal] = (event.timestamp, item.id)
-        if len(profile.recent_signals) == 3:
-            timestamps = [record[0] for record in profile.recent_signals.values()]
-            if not profile.browser_asset_sequence and (max(timestamps) - min(timestamps)).total_seconds() <= BROWSING_WINDOW_SECONDS:
-                profile.browser_asset_sequence = True
-                for signal, (_, identity) in profile.recent_signals.items():
-                    profile.browsing_evidence[signal] = identity
+        if css:
+            profile.browsing_evidence.setdefault("css", item.id)
 
     # Attribute only alerts whose own source IP matches linked access evidence.
     # Server-wide alerts do not identify an individual malicious visitor.

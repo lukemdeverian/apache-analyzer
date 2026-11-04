@@ -3,7 +3,7 @@
 This walkthrough uses the committed synthetic Apache files and a fresh,
 separate SQLite database. It leaves your normal database and `.env` unchanged.
 The [example manifest](../examples/expected.json) records the expected results;
-the [detection catalog](DETECTIONS.md) explains all 11 rules.
+the [detection catalog](DETECTIONS.md) explains all 12 rules.
 
 ## Start an isolated demo
 
@@ -38,16 +38,16 @@ Open <http://127.0.0.1:5050/>. Before analyst status changes, expect:
 | Open alerts | 11, all new |
 | High / medium alerts | 6 / 5 |
 | Logged IPs | 29 |
-| Alert counts by rule | One for each of the 11 defaults |
+| Alert counts by rule | One for each of the 11 rules exercised by the original demo |
 | Rejected / blank lines per demo file | 1 / 1 |
 | Explicit detect after both imports | 11 findings unchanged; 0 creations, updates, or merges |
 
 The records are dated 2026-10-06. Clear date filters and use UTC for the error
-file to reproduce the manifest. Reimporting adds events, so start another fresh
-demo database to reproduce these initial totals.
+file to reproduce the manifest. Reimporting unchanged files is now a no-op.
+Use a fresh demo database if older data or historical duplicates change the totals.
 
 Alternatively, initialize an empty database and upload the two demo files
-through **Import logs**, selecting access and error explicitly. Use UTC for
+through **Import logs**, selecting Chronoscrate and access/error explicitly. Use UTC for
 the error file. This produces the same counts with unique upload source labels.
 
 ## Review and triage
@@ -124,7 +124,13 @@ uploads gzip-compressed copies of the published demo into a second empty databas
 and reviews all 120 burst records, their compressed-file provenance, and a saved
 analyst decision. It also checks damaged-gzip feedback, bot classifications,
 IP filters, category pagination, raw evidence, false-positive reclassification,
-and a downloaded ban-candidate file. No existing
+and a downloaded ban-candidate file. It also verifies required website selection,
+La Jolla Seals gzip imports, isolated records/statuses/exports, domain-specific
+bookmarks, and the comparison table. Duplicate-prevention checks cover renamed/gzip
+copies, unchanged totals, retained repeated lines, and paginated evidence review.
+Suspected-IP checks cover request-history pagination, raw log access, IP/date/domain
+filters, failed-load retries, stale-response protection, and mobile layout.
+No existing
 application data or browser profile is used.
 
 The default browser is Microsoft Edge on Windows. Set `BROWSER_PATH` for
@@ -140,7 +146,7 @@ node tests\browser_dashboard.mjs
 
 | Symptom | Check |
 | --- | --- |
-| Database schema is missing or incompatible | Run init-db in the terminal using the intended DATABASE_PATH. Owned version 1 databases upgrade in place; unrelated or future schemas are refused. |
+| Database schema is missing or incompatible | Run init-db in the terminal using the intended DATABASE_PATH. Owned version 1/2 databases upgrade to version 3 in place; unrelated or future schemas are refused. |
 | No supported Apache records | Check access/error selection, UTF-8 content (plain or gzip-compressed), and the supported common/combined or standard/legacy layouts. Combined access logs also accept trailing `name:"value"` or `name:token` fields; other custom layouts remain unsupported. |
 | Demo counts differ | Use a fresh database, import each file once with default rules, choose UTC for error timestamps, and clear filters. |
 | CLI changes are missing from the dashboard | Select Refresh; confirm both processes use the same database path. |

@@ -33,7 +33,7 @@ def import_example(app, intake, name, log_type):
         assert summary["source_file"] == str(path.resolve())
     else:
         response = app.test_client().post("/api/imports", headers={"X-Apache-Upload": "1"}, data={
-            "file": (io.BytesIO(path.read_bytes()), name), "log_type": log_type, "error_timezone": "UTC",
+            "file": (io.BytesIO(path.read_bytes()), name), "log_type": log_type, "error_timezone": "UTC", "domain_id": "chronoscrate",
         })
         assert response.status_code == 201, response.json
         summary = response.json["summary"]
@@ -98,7 +98,7 @@ def test_public_demo_import_investigate_triage_replay_and_reopen_database(
     assert stats["alerts"]["by_severity"] == EXPECTED["alerts_by_severity"]
     assert stats["alerts"]["by_rule_id"] == {rule["rule_id"]: 1 for rule in EXPECTED["rules"]}
     catalog = client.get("/api/rules").json["items"]
-    assert {rule["rule_id"] for rule in catalog} == set(stats["alerts"]["by_rule_id"])
+    assert set(stats["alerts"]["by_rule_id"]) <= {rule["rule_id"] for rule in catalog}
 
     alerts = all_pages(client, "/api/alerts", 4)
     assert len({alert["id"] for alert in alerts}) == EXPECTED["alerts"]
@@ -141,6 +141,7 @@ def test_public_demo_import_investigate_triage_replay_and_reopen_database(
     }
     assert persisted_snapshot(app) == before
     rejected = client.post("/api/imports", headers={"X-Apache-Upload": "1"}, data={
+        "domain_id": "chronoscrate",
         "file": (io.BytesIO((EXAMPLES / "demo_error.txt").read_bytes()), "wrong-format.txt"),
         "log_type": "access",
     })

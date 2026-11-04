@@ -44,6 +44,8 @@ _SECRET_FILES = frozenset({
     "id_rsa", "id_ed25519",
 })
 _BACKUP_SUFFIXES = (".sql", ".sqlite", ".sqlite3", ".db", ".bak", ".old", ".orig", ".swp", "~")
+_WORDPRESS_ENTRY_POINTS = frozenset({"wp-login.php", "xmlrpc.php"})
+_WORDPRESS_ADMIN_SCRIPTS = frozenset({"install.php", "setup-config.php", "upgrade.php", "admin.php", "index.php"})
 
 
 def validate_allowed_methods(methods: Iterable[str]) -> frozenset[str]:
@@ -133,4 +135,17 @@ def sensitive_file(inspection: RequestInspection) -> str | None:
 def unusual_method(inspection: RequestInspection) -> str | None:
     if inspection.method is not None and inspection.method not in inspection.allowed_methods:
         return "HTTP method outside the configured allowed_methods set"
+    return None
+
+
+def wordpress_probe(inspection: RequestInspection) -> str | None:
+    """Recognize unexpected WordPress entry points, not assets or quoted links."""
+    for value in inspection.path_views:
+        parts = [part for part in value.casefold().replace("\\", "/").split("/") if part not in ("", ".")]
+        for index, part in enumerate(parts):
+            if part in _WORDPRESS_ENTRY_POINTS:
+                return "WordPress login or remote-procedure endpoint in the request path"
+            if part == "wp-admin":
+                if index == len(parts) - 1 or parts[index + 1] in _WORDPRESS_ADMIN_SCRIPTS:
+                    return "WordPress installation or administration endpoint in the request path"
     return None

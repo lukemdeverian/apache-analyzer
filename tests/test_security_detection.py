@@ -387,10 +387,11 @@ def test_server_evidence_is_not_capped_at_one_storage_page(store):
     assert result.event_ids == tuple(ids)
 
 
-def test_file_imports_can_be_reviewed_for_all_seven_new_rule_types(store, tmp_path):
+def test_file_imports_can_be_reviewed_for_all_eight_security_and_server_rule_types(store, tmp_path):
     access_events = [
         access("/../private.txt"), access("/?id=1+UNION+SELECT+1"),
         access("/?q=%3Cscript%3Ealert(1)%3C/script%3E"), access("/.env"), access(method="TRACE"),
+        access("/wp-admin/install.php?step=1"),
         *(access(status=503, ip=f"192.0.2.{index + 30}") for index in range(20)),
     ]
     access_path = tmp_path / "security-access.txt"
@@ -398,12 +399,12 @@ def test_file_imports_can_be_reviewed_for_all_seven_new_rule_types(store, tmp_pa
     error_path = tmp_path / "security-error.txt"
     error_path.write_text("\n".join(error().raw_log for _ in range(10)), encoding="utf-8")
 
-    assert ingest_file(access_path, "access", store).imported_events == 25
+    assert ingest_file(access_path, "access", store).imported_events == 26
     assert ingest_file(error_path, "error", store).imported_events == 10
     results = findings(store)
 
     assert {result.rule_id for result in results} == REQUEST_IDS | {SERVER, ERROR}
-    assert len(results) == 7
+    assert len(results) == 8
     assert store.count_alerts() == 0
     for result in results:
         evidence = [store.get_event(event_id).event for event_id in result.event_ids]

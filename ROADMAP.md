@@ -47,9 +47,51 @@ checks, analyst-decision persistence, and the published demo in a real browser.
 
 Complete: IP-level Confirmed bot, Suspected bot, and Not a bot categories for
 chronoscrate.xyz. Any IP-attributed risk alert overrides normal browsing;
-false-positive alerts are excluded. Successful page requests and language/HTML/CSS
-signals support the normal category. The dashboard includes evidence links,
+false-positive alerts are excluded. Successful CSS requests support the normal
+category; HTML, page visits, and language are neutral context. The dashboard includes evidence links,
 filters, analyst-aware reclassification, and an IP export for blocking review.
 Server-wide errors do not attribute blame to individual visitors. See
 [the policy and workflow](docs/BOT_TRAFFIC.md). Suggested commit:
 `feat: assess bot traffic and export IP block candidates`.
+
+## Follow-up: two-domain study
+
+Complete: explicit upload selection for Chronoscrate (chronoscrate.xyz, Dynadot)
+and La Jolla Seals (protectlajollaseals.xyz, Namecheap). Separate local databases
+isolate detection windows, correlation, statuses, evidence, assessments, and
+exports. Existing data remains Chronoscrate. Added website switching, scoped
+detail links, CLI/API selection, and a comparison table with counts/rates.
+Provider labels are supplied study metadata; the comparison is observational.
+See [the setup and API guide](docs/MULTI_DOMAIN.md). Suggested commit:
+`feat: isolate domain traffic and compare website providers`.
+
+## Follow-up: duplicate prevention
+
+Complete: per-website/log-type import fingerprints skip repeated files across
+filenames and plain/gzip wrapping. Identical lines within a new file remain
+counted and are flagged with paginated original/repeated evidence links.
+Schema version 3 upgrades owned versions 1/2 and recognizes legacy file sequences
+where usable provenance exists, without deleting historical events or alerts.
+Transactions include registry updates, and concurrent same-site uploads append
+only once. See [the duplicate guide](docs/DUPLICATE_IMPORTS.md). Suggested commit:
+`feat: prevent duplicate imports and review repeated log lines`.
+
+## Follow-up: request history in IP assessments
+
+Complete: every Bot traffic IP detail, including suspected bots without alerts
+or CSS evidence, shows its full paginated access-request history. Website, IP,
+and UTC date filters apply; raw-record links reuse the existing evidence viewer.
+Added refresh/retry feedback and stale-response protection on close/domain
+changes. The view uses existing APIs and requires no additional schema change.
+Suggested commit: `feat: show request history in bot traffic details`.
+
+## Follow-up: unexpected WordPress endpoint probes
+
+Complete: `APACHE-WORDPRESS-PROBE` flags a single unexpected installation,
+administration, login, or XML-RPC request regardless of HTTP response status.
+CSS and language observations never override the resulting risk alert. Added
+encoded/subdirectory matching, benign-asset exclusions, existing-event rescan
+regressions, and an independent three-record sample. The catalog now has twelve
+rules; the original eleven-rule demo counts are unchanged. See
+[the detection catalog](docs/DETECTIONS.md) for review and rescan instructions.
+Suggested commit: `fix: flag unexpected WordPress probes as bot risk`.

@@ -32,7 +32,7 @@ def file(tmp_path, name, lines):
     return path
 
 
-def test_import_and_detection_can_persist_all_eleven_rule_types(store, tmp_path):
+def test_import_and_detection_can_persist_all_twelve_rule_types(store, tmp_path):
     lines = []
     cases = [
         ("APACHE-PATH-ENUMERATION", 10, 404, "192.0.2.30"),
@@ -48,7 +48,7 @@ def test_import_and_detection_can_persist_all_eleven_rule_types(store, tmp_path)
     lines.extend([
         access_line("/../private.txt"), access_line("/?id=1+UNION+SELECT+1"),
         access_line("/?q=%3Cscript%3Ealert(1)%3C/script%3E"),
-        access_line("/.env"), access_line(method="TRACE"),
+        access_line("/.env"), access_line(method="TRACE"), access_line("/wp-admin/install.php?step=1"),
     ])
     lines.extend(access_line(status=503, ip=f"192.0.2.{index + 40}") for index in range(20))
     access_path = file(tmp_path, "all-access.txt", lines)
@@ -59,11 +59,11 @@ def test_import_and_detection_can_persist_all_eleven_rule_types(store, tmp_path)
     imported = analyze_file(access_path, "access", store)
     errors = analyze_file(error_path, "error", store)
 
-    assert imported.import_summary.imported_events == 185
-    assert imported.detection.alerts_created == 10
+    assert imported.import_summary.imported_events == 186
+    assert imported.detection.alerts_created == 11
     assert errors.import_summary.imported_events == 10
     assert errors.detection.alerts_created == 1
-    assert store.count_alerts() == 11
+    assert store.count_alerts() == 12
     alerts = store.list_alerts()
     assert {item.alert.rule_id for item in alerts} == {rule.rule_id for rule in DetectionEngine().rules}
     assert all(item.alert.status == "new" for item in alerts)
@@ -74,7 +74,7 @@ def test_import_and_detection_can_persist_all_eleven_rule_types(store, tmp_path)
         assert all(item.event.line_number > 0 for item in evidence)
     before = store.connection.total_changes
     rerun = detect_events(store)
-    assert rerun.findings == rerun.findings_unchanged == 11
+    assert rerun.findings == rerun.findings_unchanged == 12
     assert rerun.alerts_created == rerun.alert_updates == rerun.alerts_merged == 0
     assert store.connection.total_changes == before
     assert store.list_alerts() == alerts
@@ -116,14 +116,17 @@ def test_late_imports_create_new_windows_and_add_context_to_existing_alerts(stor
     assert detect_events(store).alert_updates == 0
 
 
-def test_reimport_appends_events_and_extends_existing_open_alert(store, tmp_path):
+def test_reimport_does_not_add_events_or_extend_alerts(store, tmp_path):
     path = file(tmp_path, "probe.txt", [access_line("/.env")])
     first = analyze_file(path, "access", store)
+    before = list(store.connection.iterdump())
     second = analyze_file(path, "access", store)
     assert first.detection.alerts_created == 1
-    assert second.detection.alerts_created == 0 and second.detection.alert_updates == 1
-    assert store.count_events() == 2 and store.count_alerts() == 1
-    assert store.list_alerts()[0].event_count == 2
+    assert second.detection.alerts_created == second.detection.alert_updates == 0
+    assert second.import_summary.duplicate_file
+    assert store.count_events() == store.count_alerts() == 1
+    assert store.list_alerts()[0].event_count == 1
+    assert list(store.connection.iterdump()) == before
 
 
 @pytest.mark.parametrize("status", ["resolved", "false_positive"])
@@ -136,7 +139,8 @@ def test_replay_preserves_closed_status_and_fresh_requests_create_new_alert(stor
     assert detect_events(store).findings_unchanged == 1
     assert store.get_alert(original.id) == closed
 
-    summary = analyze_file(path, "access", store)
+    fresh = file(tmp_path, "fresh.txt", [access_line("/.env", seconds=1)])
+    summary = analyze_file(fresh, "access", store)
 
     assert summary.detection.alerts_created == 1
     assert store.count_alerts() == 2

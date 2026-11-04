@@ -65,7 +65,7 @@ const field = (selector, value) => evaluate(
 );
 const submit = (selector) => evaluate("document.querySelector(" + JSON.stringify(selector) + ").requestSubmit()");
 
-async function importLog(text, logType, timezone = "UTC", filename = "browser-" + logType + ".log") {
+async function importLog(text, logType, timezone = "UTC", filename = "browser-" + logType + ".log", domainId = "chronoscrate") {
   const content = typeof text === "string" ? JSON.stringify(text) :
     "Uint8Array.from(" + JSON.stringify([...text]) + ")";
   await click("#open-import");
@@ -76,6 +76,7 @@ async function importLog(text, logType, timezone = "UTC", filename = "browser-" 
     "document.getElementById('upload-file').files = transfer.files; })()",
   );
   await field("#upload-type", logType);
+  await field("#upload-domain", domainId);
   await evaluate("document.getElementById('upload-type').dispatchEvent(new Event('change'))");
   if (logType === "error") await field("#upload-timezone", timezone);
   await submit("#import-form");
@@ -222,17 +223,17 @@ try {
   await waitFor("document.getElementById('page-message').textContent.includes('Synthetic catalog failure')",
     "catalog failure feedback");
   await click("#refresh");
-  await waitFor("document.querySelectorAll('#rule-cards .rule-card').length === 11", "rule catalog");
+  await waitFor("document.querySelectorAll('#rule-cards .rule-card').length === 12", "rule catalog");
   await waitFor("document.getElementById('refresh').disabled === false", "catalog recovery");
   assert.equal(await evaluate("document.getElementById('page-message').hidden"), true);
-  assert.equal(await evaluate("document.getElementById('rule-filter').options.length"), 12);
+  assert.equal(await evaluate("document.getElementById('rule-filter').options.length"), 13);
   await click('[data-view="overview"]');
   await click("#clear-filters");
   await waitFor("document.getElementById('stat-events').textContent === '36'", "final overview");
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Mobile layout overflows the viewport.");
   assert.deepEqual(exceptions, [], "Unexpected browser JavaScript errors.");
-  console.log("PASS validation feedback, 11 rule cards, and mobile layout");
+  console.log("PASS validation feedback, 12 rule cards, and mobile layout");
 
   // Run the published demo in a second, empty database so its documented
   // totals do not depend on the preceding browser scenarios.
@@ -297,7 +298,7 @@ try {
   assert.equal(await evaluate("document.getElementById('stat-events').textContent"), "195");
   assert.equal(await evaluate("document.getElementById('stat-open').textContent"), "10");
   assert.deepEqual(exceptions, [], "Unexpected browser JavaScript errors during the public demo.");
-  console.log("PASS gzip demo: 195 events, 11 rules, all 120 burst evidence records, triage, and damaged gzip feedback");
+  console.log("PASS gzip demo: 195 events, 11 demo alerts, all 120 burst evidence records, triage, and damaged gzip feedback");
   await importLog(readFileSync(join(root, "examples/bot_traffic.txt"), "utf8"), "access", "UTC", "bot_traffic.txt");
   await click("#import-dialog [data-close]");
   await click('[data-view="bots"]');
@@ -312,21 +313,20 @@ try {
   await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 1", "IP assessment filter");
   await click("#bot-rows .row-link");
   assert.match(await evaluate("document.getElementById('bot-title').textContent"), /Confirmed bot/);
-  assert.match(await evaluate("document.getElementById('bot-metadata').textContent"), /Home page requests1/);
-  assert.match(await evaluate("document.getElementById('bot-metadata').textContent"), /Checkout requests1/);
-  await click("#bot-browsing-evidence button");
-  await waitFor("document.getElementById('raw-log').textContent.includes('GET / HTTP/1.1')", "bot raw evidence");
-  await click("#event-dialog [data-close]");
+  assert.match(await evaluate("document.getElementById('bot-metadata').textContent"), /Home page requests \(neutral\)1/);
+  assert.match(await evaluate("document.getElementById('bot-metadata').textContent"), /Checkout requests \(neutral\)1/);
+  assert.equal(await evaluate("document.querySelectorAll('#bot-browsing-evidence button').length"), 0);
   await click("#bot-risk-evidence button");
   await waitFor("document.getElementById('analyst-status').disabled === false", "bot linked alert");
   await field("#analyst-status", "false_positive");
   await submit("#status-form");
   await waitFor("document.getElementById('status-message').textContent === 'Status saved.'", "bot false positive status");
-  await waitFor("document.getElementById('bot-normal').textContent === '1'", "bot reclassification");
+  await waitFor("document.getElementById('bot-suspected').textContent === '1'", "bot reclassification without CSS");
+  assert.equal(await evaluate("document.getElementById('bot-normal').textContent"), "0");
   await click("#alert-dialog [data-close]");
   assert.equal(await evaluate("document.getElementById('export-bots').disabled"), true);
   await click("#bot-rows .row-link");
-  assert.match(await evaluate("document.getElementById('bot-title').textContent"), /Not a bot/);
+  assert.match(await evaluate("document.getElementById('bot-title').textContent"), /Suspected bot/);
   await click("#bot-dialog [data-close]");
   await click("#clear-filters");
   await waitFor("document.getElementById('bot-confirmed').textContent === '8'", "bot global counts after review");
@@ -342,11 +342,235 @@ try {
   assert(!candidates.includes("203.0.113.201"), "False positive was exported for blocking.");
   await field('#bot-filters [name="classification"]', "not_a_bot");
   await submit("#bot-filters");
-  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 3", "bot category filter");
+  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 2", "CSS category filter");
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#bot-rows tr td:first-child'), cell => cell.textContent).sort()"),
+    ["203.0.113.203", "203.0.113.205"]);
+  await click("#bot-rows .row-link");
+  await click("#bot-browsing-evidence button");
+  await waitFor("document.getElementById('raw-log').textContent.includes('.css')", "CSS raw evidence");
+  await click("#event-dialog [data-close]");
+  await click("#bot-dialog [data-close]");
+  await click("#clear-filters");
+  await field('#common-filters [name="source_ip"]', "203.0.113.202");
+  await submit("#common-filters");
+  await waitFor("document.getElementById('bot-suspected').textContent === '1'", "HTML-only visit is neutral");
+  assert.equal(await evaluate("document.getElementById('bot-normal').textContent"), "0");
   await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), true);
   assert.deepEqual(exceptions, [], "Unexpected browser errors in bot assessments.");
   console.log("PASS bot categories, pagination, IP filters, raw evidence, false-positive reclassification, candidate export, and mobile layout");
+  await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await click("#clear-filters");
+  const seals = '192.0.2.10 - - [21/Oct/2026:10:00:00 +0000] "GET https://protectlajollaseals.xyz/theme.css HTTP/1.1" 200 100 "-" "Synthetic browser"\n' +
+    '192.0.2.20 - - [21/Oct/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 10 "-" "Synthetic browser"\n';
+  await click("#open-import");
+  assert.equal(await evaluate("document.getElementById('upload-domain').value"), "");
+  assert.equal(await evaluate("document.getElementById('upload-domain').required"), true);
+  await click("#import-dialog [data-close]");
+  await importLog(gzipSync(Buffer.from(seals)), "access", "UTC", "seals.log.gz", "la_jolla_seals");
+  assert.match(await evaluate("document.getElementById('import-summary').textContent"), /La Jolla Seals \(Namecheap\)/);
+  assert.equal(await evaluate("document.getElementById('active-domain').value"), "la_jolla_seals");
+  assert.match(await evaluate("location.search"), /domain_id=la_jolla_seals/);
+  await click("#import-dialog [data-close]");
+  await waitFor("document.getElementById('bot-confirmed').textContent === '1' && document.getElementById('bot-normal').textContent === '1'", "independent La Jolla assessments");
+  assert.match(await evaluate("document.getElementById('bot-site').textContent"), /protectlajollaseals.xyz/);
+  await click("#export-bots");
+  const sealsDownload = join(downloadPath, "ban-candidates-la_jolla_seals.txt");
+  await until(() => existsSync(sealsDownload), "domain-scoped ban candidate download");
+  assert.equal(readFileSync(sealsDownload, "utf8"), "192.0.2.20\n");
+  await click('[data-view="events"]');
+  await waitFor("document.querySelectorAll('#event-rows button').length === 2", "La Jolla events");
+  await click("#event-rows tr:last-child button");
+  await waitFor("document.getElementById('raw-log').textContent.includes('protectlajollaseals.xyz/theme.css')", "domain-scoped event details");
+  assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /Namecheap/);
+  await click("#event-dialog [data-close]");
+  await field("#active-domain", "chronoscrate");
+  await evaluate("document.getElementById('active-domain').dispatchEvent(new Event('change'))");
+  await waitFor("document.getElementById('stat-events').textContent === '203'", "legacy domain preserved");
+  await click('[data-view="bots"]');
+  await waitFor("document.getElementById('bot-confirmed').textContent === '8'", "no cross-domain risk or CSS");
+  await click('[data-view="comparison"]');
+  await waitFor("document.querySelectorAll('#comparison-rows tr').length === 2", "domain comparison");
+  assert.match(await evaluate("document.getElementById('comparison-rows').textContent"), /Dynadot/);
+  assert.match(await evaluate("document.getElementById('comparison-rows').textContent"), /Namecheap/);
+  assert.equal(await evaluate("document.querySelector('#comparison-rows tr:first-child td:nth-child(2)').textContent"), "193");
+  assert.equal(await evaluate("document.querySelector('#comparison-rows tr:last-child td:nth-child(2)').textContent"), "2");
+  assert.equal(await evaluate("document.querySelector('#comparison-rows tr:last-child td:last-child').textContent"), "50");
+  await command("Page.navigate", { url: demoUrl + "/?domain_id=la_jolla_seals#alerts/1" });
+  await waitFor("document.getElementById('alert-metadata')?.textContent.includes('Namecheap')", "domain-scoped deep link");
+  assert.equal(await evaluate("document.getElementById('active-domain').value"), "la_jolla_seals");
+  await field("#analyst-status", "false_positive");
+  await submit("#status-form");
+  await waitFor("document.getElementById('status-message').textContent === 'Status saved.'", "domain-specific analyst status");
+  assert.equal(await evaluate("fetch('/api/alerts/1').then(response => response.json()).then(body => body.item.status)"), "new");
+  await click("#alert-dialog [data-close]");
+  await click('[data-view="comparison"]');
+  await waitFor("document.querySelector('#comparison-rows tr:last-child td:last-child')?.textContent === '0'", "comparison follows analyst decision");
+  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), true);
+  assert.deepEqual(exceptions, [], "Unexpected browser errors during domain comparison.");
+  console.log("PASS required domain selection, gzip import, independent events/alerts/bots/exports, deep links, comparison, and analyst isolation");
+  const sealsBefore = await evaluate("fetch('/api/stats?domain_id=la_jolla_seals').then(response => response.json())");
+  await importLog(gzipSync(Buffer.from(seals)), "access", "UTC", "renamed-seals.gz", "la_jolla_seals");
+  assert.match(await evaluate("document.getElementById('import-message').textContent"), /Already imported/);
+  assert.match(await evaluate("document.getElementById('import-summary').textContent"), /Imported events0/);
+  assert.deepEqual(await evaluate("fetch('/api/stats?domain_id=la_jolla_seals').then(response => response.json())"), sealsBefore);
+  await click("#import-dialog [data-close]");
+  const repeatedCss = '198.51.100.200 - - [21/Oct/2026:12:00:00 +0000] "GET /assets/repeat-check.css HTTP/1.1" 200 123 "-" "Synthetic browser"\n';
+  await importLog(repeatedCss.repeat(31), "access", "UTC", "repeat-lines.log");
+  assert.match(await evaluate("document.getElementById('import-message').textContent"), /30 repeated lines retained/);
+  assert.equal(await evaluate("document.getElementById('review-duplicate-lines').hidden"), false);
+  await click("#review-duplicate-lines");
+  await waitFor("document.getElementById('duplicate-pagination').textContent.includes('1–25 of 30')", "repeated-line page one");
+  assert.equal(await evaluate("document.querySelectorAll('#duplicate-rows tr').length"), 25);
+  await click("#duplicate-pagination button:last-child");
+  await waitFor("document.getElementById('duplicate-pagination').textContent.includes('26–30 of 30')", "repeated-line page two");
+  await click("#duplicate-rows tr:first-child td:last-child button");
+  await waitFor("document.getElementById('raw-log').textContent.includes('/assets/repeat-check.css')", "repeated-line raw evidence");
+  assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /Line number27/);
+  const repeatedRaw = await evaluate("document.getElementById('raw-log').textContent");
+  await click("#event-dialog [data-close]");
+  await click("#duplicate-rows tr:first-child td:nth-child(3) button");
+  await waitFor("document.getElementById('event-metadata').textContent.includes('Line number1')", "first-occurrence evidence");
+  assert.equal(await evaluate("document.getElementById('raw-log').textContent"), repeatedRaw);
+  await click("#event-dialog [data-close]");
+  await click("#duplicate-dialog [data-close]");
+  await click("#import-dialog [data-close]");
+  const primaryBefore = await evaluate("fetch('/api/stats').then(response => response.json())");
+  await importLog(gzipSync(Buffer.from(repeatedCss.repeat(31))), "access", "UTC", "copy.gz");
+  assert.match(await evaluate("document.getElementById('import-message').textContent"), /Already imported/);
+  assert.match(await evaluate("document.getElementById('import-summary').textContent"), /repeat-lines.log/);
+  assert.deepEqual(await evaluate("fetch('/api/stats').then(response => response.json())"), primaryBefore);
+  await click("#review-duplicate-lines");
+  await waitFor("document.querySelectorAll('#duplicate-rows tr').length === 25", "persisted repeated-line review");
+  await click("#duplicate-dialog [data-close]");
+  await click("#import-dialog [data-close]");
+  await importLog(repeatedCss.repeat(31), "access", "UTC", "seals-repeats.log", "la_jolla_seals");
+  assert.match(await evaluate("document.getElementById('import-message').textContent"), /Imported 31 events/);
+  await click("#review-duplicate-lines");
+  await waitFor("document.getElementById('duplicate-source').textContent.includes('seals-repeats.log')", "domain-scoped repetition review");
+  assert.match(await evaluate("document.getElementById('duplicate-source').textContent"), /Namecheap/);
+  await click("#duplicate-rows tr:first-child td:last-child button");
+  await waitFor("document.getElementById('event-metadata').textContent.includes('seals-repeats.log')", "domain-scoped repeated record");
+  assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /Namecheap/);
+  await click("#event-dialog [data-close]");
+  await click("#duplicate-dialog [data-close]");
+  await click("#import-dialog [data-close]");
+  assert.deepEqual(exceptions, [], "Unexpected browser errors in duplicate prevention.");
+  console.log("PASS file duplicate prevention, gzip/rename detection, retained repeated lines, paginated evidence review, and domain isolation");
+  await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await click("#clear-filters");
+  const historyIp = "198.51.100.77";
+  const historyLines = Array.from({ length: 30 }, (_, index) =>
+    historyIp + ' - - [21/Oct/2026:14:00:' + String(index).padStart(2, "0") +
+    ' +0000] "GET /history/page-' + index + ' HTTP/1.1" 200 123 "-" "' +
+    (index === 29 ? "<script>window.__requestReviewExecuted=true</script>" : "Synthetic client") + '"\n',
+  ).join("");
+  await importLog(historyLines +
+    '198.51.100.78 - - [21/Oct/2026:14:00:15 +0000] "GET /other-ip HTTP/1.1" 200 123 "-" "Synthetic client"\n',
+    "access", "UTC", "suspected-history.log");
+  await click("#import-dialog [data-close]");
+  await importLog("[Wed Oct 21 14:00:15.000000 2026] [core:notice] [client 198.51.100.77:1234] AH00001: Synthetic context\n",
+    "error", "UTC", "history-error.log");
+  await click("#import-dialog [data-close]");
+  await click('[data-view="bots"]');
+  await field('#common-filters [name="source_ip"]', historyIp);
+  await submit("#common-filters");
+  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 1", "suspected request-history IP");
+  await click("#bot-rows .row-link");
+  assert.match(await evaluate("document.getElementById('bot-title').textContent"), /Suspected bot/);
+  await waitFor("document.getElementById('bot-request-pagination').textContent.includes('1–25 of 30')", "suspected request page one");
+  assert.equal(await evaluate("document.querySelectorAll('#bot-request-rows tr').length"), 25);
+  assert.equal(await evaluate("document.querySelector('#bot-request-rows tr:first-child td:nth-child(4)').textContent"), "GET /history/page-0 HTTP/1.1");
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('#bot-request-rows tr')).every(row => row.cells[1].textContent === 'access' && row.cells[2].textContent === '198.51.100.77')"), true);
+  await click("#bot-request-pagination button:last-child");
+  await waitFor("document.getElementById('bot-request-pagination').textContent.includes('26–30 of 30')", "suspected request page two");
+  await click("#bot-request-rows tr:last-child button");
+  await waitFor("document.getElementById('raw-log').textContent.includes('/history/page-29')", "suspected raw log request");
+  assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /suspected-history.log/);
+  assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /Line number30/);
+  assert.equal(await evaluate("window.__requestReviewExecuted"), undefined);
+  await click("#event-dialog [data-close]");
+  assert.equal(await evaluate("document.getElementById('bot-dialog').open"), true);
+  await click("#refresh-bot-requests");
+  await waitFor("document.getElementById('bot-request-pagination').textContent.includes('1–25 of 30')", "request refresh resets pagination");
+  await click("#bot-dialog [data-close]");
+  await field('#common-filters [name="start"]', "2026-10-21T14:00:10");
+  await field('#common-filters [name="end"]', "2026-10-21T14:00:12");
+  await submit("#common-filters");
+  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 1", "filtered suspected IP");
+  await click("#bot-rows .row-link");
+  await waitFor("document.getElementById('bot-request-count').textContent === '(3)'", "inclusive request date range");
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#bot-request-rows tr'), row => row.cells[3].textContent)"),
+    ["GET /history/page-10 HTTP/1.1", "GET /history/page-11 HTTP/1.1", "GET /history/page-12 HTTP/1.1"]);
+  await evaluate("(() => { const original = window.fetch; let fail = true; window.fetch = (...args) => {" +
+    "if (String(args[0]).startsWith('/api/events?') && fail) { fail = false; return Promise.resolve(new Response(" +
+    "JSON.stringify({error:{message:'Synthetic request history failure'}}), {status:503,headers:{'Content-Type':'application/json'}})); } " +
+    "return original(...args); }; })()");
+  await click("#refresh-bot-requests");
+  await waitFor("document.getElementById('bot-request-message').textContent.includes('Synthetic request history failure')", "request history error feedback");
+  await click("#refresh-bot-requests");
+  await waitFor("document.querySelectorAll('#bot-request-rows button').length === 3", "request history retry");
+  assert.equal(await evaluate("document.getElementById('bot-request-message').hidden"), true);
+  await click("#bot-dialog [data-close]");
+  await click("#clear-filters");
+  await importLog(historyIp + ' - - [21/Oct/2026:14:00:15 +0000] "GET /seals-only HTTP/1.1" 200 123 "-" "Synthetic client"\n',
+    "access", "UTC", "seals-history.log", "la_jolla_seals");
+  await click("#import-dialog [data-close]");
+  await field('#common-filters [name="source_ip"]', historyIp);
+  await submit("#common-filters");
+  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 1", "same IP on second domain");
+  await click("#bot-rows .row-link");
+  await waitFor("document.getElementById('bot-request-count').textContent === '(1)'", "domain-specific request history");
+  assert.equal(await evaluate("document.querySelector('#bot-request-rows tr td:nth-child(4)').textContent"), "GET /seals-only HTTP/1.1");
+  await click("#bot-request-rows button");
+  await waitFor("document.getElementById('event-metadata').textContent.includes('seals-history.log')", "domain-scoped raw request");
+  assert.match(await evaluate("document.getElementById('event-metadata').textContent"), /Namecheap/);
+  await click("#event-dialog [data-close]");
+  // Hold a response, switch domains, and ensure it cannot overwrite the new IP view.
+  await evaluate("(() => { const original = window.fetch; let hold = true; window.fetch = (...args) => {" +
+    "if (String(args[0]).startsWith('/api/events?') && hold) { hold = false; const response = original(...args); " +
+    "return new Promise(resolve => { window.__releaseBotRequest = () => response.then(resolve); }); } return original(...args); }; })()");
+  await click("#refresh-bot-requests");
+  await waitFor("typeof window.__releaseBotRequest === 'function'", "held request history");
+  await click("#bot-dialog [data-close]");
+  await field("#active-domain", "chronoscrate");
+  await evaluate("document.getElementById('active-domain').dispatchEvent(new Event('change'))");
+  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 1", "reopened primary IP");
+  await click("#bot-rows .row-link");
+  await waitFor("document.getElementById('bot-request-count').textContent === '(30)'", "new domain request history");
+  await evaluate("window.__releaseBotRequest()");
+  await delay(100);
+  assert.equal(await evaluate("document.getElementById('bot-request-count').textContent"), "(30)");
+  assert.equal(await evaluate("document.querySelector('#bot-request-rows tr td:nth-child(4)').textContent"), "GET /history/page-0 HTTP/1.1");
+  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), true);
+  await click("#bot-dialog [data-close]");
+  assert.deepEqual(exceptions, [], "Unexpected errors in suspected-bot request history.");
+  console.log("PASS suspected-IP request history, pagination, raw evidence, date/IP/domain filters, retry, stale-response protection, and mobile layout");
+  await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await click("#clear-filters");
+  const wordpressIp = "198.51.100.91";
+  const wordpress = wordpressIp + ' - - [24/Sep/2026:09:27:18 +0000] "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 493 "-" "http://example.test/wp-admin/install.php?step=1" lang:"en-us,en;q=0.8,fr;q=0.5,fr-ca;q=0.3" enc:"gzip" sfm:"-" sfs:"-" sfd:"-" sfu:"-" chua:"-" chplat:"-" uir:"-" proto:HTTP/1.1 reqtime:342\n' +
+    wordpressIp + ' - - [24/Sep/2026:09:27:19 +0000] "GET /style.css HTTP/1.1" 200 100 "-" "Synthetic browser"\n';
+  await importLog(wordpress, "access", "UTC", "wordpress-probes.log");
+  await click("#import-dialog [data-close]");
+  await field('#common-filters [name="source_ip"]', wordpressIp);
+  await submit("#common-filters");
+  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 1", "WordPress probe IP");
+  await click("#bot-rows .row-link");
+  assert.match(await evaluate("document.getElementById('bot-title').textContent"), /Confirmed bot/);
+  assert.match(await evaluate("document.getElementById('bot-metadata').textContent"), /Successful CSS requests1/);
+  assert.match(await evaluate("document.getElementById('bot-metadata').textContent"), /Requests with language preference \(neutral\)1/);
+  await click("#bot-risk-evidence button");
+  await waitFor("document.getElementById('alert-title').textContent.includes('WordPress')", "WordPress alert explanation");
+  await click("#evidence-rows button");
+  await waitFor("document.getElementById('raw-log').textContent.includes('/wp-admin/install.php?step=1')", "original WordPress probe evidence");
+  assert.match(await evaluate("document.getElementById('raw-log').textContent"), /404 493/);
+  await click("#event-dialog [data-close]");
+  await click("#alert-dialog [data-close]");
+  assert.deepEqual(exceptions, [], "Unexpected browser errors in WordPress detection.");
+  console.log("PASS single WordPress installer probe classified as confirmed despite CSS/language, with raw 404 evidence");
   console.log("All browser checks passed.");
 } catch (error) {
   console.error(error);

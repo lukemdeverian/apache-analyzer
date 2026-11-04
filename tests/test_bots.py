@@ -1,4 +1,3 @@
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
 
@@ -43,13 +42,13 @@ def assessment(store, **filters):
 
 @pytest.mark.parametrize("target", ["/", "/?campaign=test", "/checkout", "/checkout/", "/checkout?cart=1",
                                          "https://chronoscrate.xyz/", "https://chronoscrate.xyz/checkout"])
-def test_successful_known_page_is_not_bot_without_risk(workspace, target):
+def test_successful_known_page_is_neutral_without_css(workspace, target):
     _, store = workspace
     identity = store.insert_event(event(target))
     result = assessment(store)
-    assert result["classification"] == "not_a_bot" and result["recommendation"] == "allow_and_monitor"
+    assert result["classification"] == "suspected_bot" and result["recommendation"] == "monitor_or_challenge"
     assert result["home_requests"] + result["checkout_requests"] == 1
-    assert any(proof["event_id"] == identity for proof in result["browsing_evidence"])
+    assert result["browsing_evidence"] == [] and identity > 0
     assert result["language_logged_requests"] == 0
 
 
@@ -59,6 +58,13 @@ def test_successful_known_page_is_not_bot_without_risk(workspace, target):
     ("https://other.example/checkout", 200, "GET"), ("https://chronoscrate.xyz.attacker.example/", 200, "GET"),
     ("https://user@chronoscrate.xyz/", 200, "GET"), ("https://chronoscrate.xyz:99999/", 200, "GET"),
     ("/%63heckout", 200, "GET"), ("*", 200, "OPTIONS"),
+    ("/theme.css", 404, "GET"), ("/theme.css", 500, "GET"), ("/theme.css", 301, "GET"),
+    ("/theme.css", 200, "HEAD"), ("/theme.css", 200, "POST"),
+    ("https://other.example/theme.css", 200, "GET"),
+    ("https://chronoscrate.xyz.attacker.example/theme.css", 200, "GET"),
+    ("https://user@chronoscrate.xyz/theme.css", 200, "GET"),
+    ("https://chronoscrate.xyz:99999/theme.css", 200, "GET"),
+    ("/search?asset=theme.css", 200, "GET"),
 ])
 def test_other_targets_failed_or_non_get_requests_are_not_positive(workspace, target, status, method):
     _, store = workspace
@@ -68,8 +74,38 @@ def test_other_targets_failed_or_non_get_requests_are_not_positive(workspace, ta
     assert result["recommendation"] == "monitor_or_challenge"
 
 
+@pytest.mark.parametrize("target,extensions", [
+    ("/theme.css", ""), ("/static/theme.css?v=1", ""), ("/THEME.CSS", ""),
+    ("https://chronoscrate.xyz/theme.css", ""), ("/assets/theme", ' sfd:"style"'),
+])
+@pytest.mark.parametrize("status", [200, 206, 304])
+def test_css_alone_is_normal_without_html_or_language(workspace, target, extensions, status):
+    client, store = workspace
+    identity = store.insert_event(event(target, status=status, extensions=extensions))
+    result = assessment(store)
+    assert result["classification"] == "not_a_bot"
+    assert result["recommendation"] == "allow_and_monitor"
+    assert result["css_requests"] == 1 and result["html_requests"] == result["language_requests"] == 0
+    assert result["browsing_evidence"] == [{"signal": "css", "event_id": identity}]
+    assert result["reasons"] == ["Successfully requested CSS."]
+    assert client.get("/api/bots/export").text == ""
+
+
+@pytest.mark.parametrize("target,extensions", [
+    ("/index.html", ""), ("/page.htm", ""), ("/about", ' sfd:"document"'),
+    ("/", ' lang:"en-US"'), ("/checkout", ' lang:"fr" sfd:"document"'),
+])
+def test_html_and_language_are_neutral_without_css(workspace, target, extensions):
+    _, store = workspace
+    store.insert_event(event(target, extensions=extensions))
+    result = assessment(store)
+    assert result["classification"] == "suspected_bot"
+    assert result["html_requests"] == 1 and result["css_requests"] == 0
+    assert result["browsing_evidence"] == []
+
+
 @pytest.mark.parametrize("language", ["en-US,en;q=0.9", "fr-FR", "zh-CN", "ar", "pt-BR", "de;q=0.2"])
-def test_language_and_html_css_sequence_counts_equally_for_all_languages(workspace, language):
+def test_languages_remain_informational_when_css_is_present(workspace, language):
     _, store = workspace
     for item in [
         event("/about.html", extensions=f' lang:"{language}"'),
@@ -78,7 +114,7 @@ def test_language_and_html_css_sequence_counts_equally_for_all_languages(workspa
         store.insert_event(item)
     result = assessment(store)
     assert result["classification"] == "not_a_bot"
-    assert result["browser_asset_sequence"] and result["home_requests"] == result["checkout_requests"] == 0
+    assert result["home_requests"] == result["checkout_requests"] == 0
     assert result["language_requests"] == 1 and result["html_requests"] == result["css_requests"] == 1
 
 
@@ -86,11 +122,12 @@ def test_language_and_html_css_sequence_counts_equally_for_all_languages(workspa
     "", ' lang:"-"', ' lang:""', ' lang:"*"', ' lang:"en;q=0"', ' lang:"nonsense!!!"',
     ' lang:"<script>DEMO</script>"', ' lang:"en" lang:"fr"', ' lang:"en" accept-language:"fr"',
 ])
-def test_missing_or_ambiguous_language_does_not_complete_browsing_sequence(workspace, extensions):
+def test_css_is_normal_even_with_missing_or_ambiguous_language(workspace, extensions):
     _, store = workspace
     store.insert_event(event("/about.html", extensions=extensions))
     store.insert_event(event("/style.css", seconds=1))
-    assert assessment(store)["classification"] == "suspected_bot"
+    result = assessment(store)
+    assert result["classification"] == "not_a_bot" and result["language_requests"] == 0
 
 
 @pytest.mark.parametrize("language_name", ["lang", "accept-language", "accept_language", "LANG"])
@@ -101,19 +138,16 @@ def test_language_field_aliases_are_supported_from_existing_raw_logs(workspace, 
     assert assessment(store)["classification"] == "not_a_bot"
 
 
-def test_old_asset_fetches_do_not_complete_sequence_and_proof_matches_actual_window(workspace):
+def test_css_needs_no_html_sequence_and_only_counts_within_selected_history(workspace):
     _, store = workspace
     store.insert_event(event("/old.html", extensions=' lang:"en"'))
-    store.insert_event(event("/old.css", seconds=301))
     assert assessment(store)["classification"] == "suspected_bot"
-    identities = [
-        store.insert_event(event("/current.html", seconds=1000, extensions=' lang:"en"')),
-        store.insert_event(event("/current.css", seconds=1001)),
-    ]
+    identity = store.insert_event(event("/current.css", seconds=1001))
     result = assessment(store)
     assert result["classification"] == "not_a_bot"
-    proof = {record["signal"]: record["event_id"] for record in result["browsing_evidence"]}
-    assert proof["html"] == proof["language"] == identities[0] and proof["css"] == identities[1]
+    assert result["browsing_evidence"] == [{"signal": "css", "event_id": identity}]
+    assert assessment(store, end=BASE)["classification"] == "suspected_bot"
+    assert assessment(store, start=BASE + timedelta(seconds=1001))["classification"] == "not_a_bot"
 
 
 @pytest.mark.parametrize("status", ["new", "investigating", "resolved"])
@@ -122,6 +156,7 @@ def test_every_ip_risk_alert_overrides_normal_browsing_even_when_resolved(worksp
     store.insert_event(event("/"))
     store.insert_event(event("/checkout", seconds=1))
     store.insert_event(event("/.env", seconds=2))
+    css_id = store.insert_event(event("/theme.css", seconds=3))
     detect_events(store)
     alert, = store.list_alerts()
     store.set_alert_status(alert.id, status)
@@ -129,34 +164,43 @@ def test_every_ip_risk_alert_overrides_normal_browsing_even_when_resolved(worksp
     assert result["classification"] == "confirmed_bot" and result["risk_alert_count"] == 1
     assert result["recommendation"] == "review_for_block"
     assert result["home_requests"] == result["checkout_requests"] == 1
+    assert result["css_requests"] == 1 and result["browsing_evidence"] == [{"signal": "css", "event_id": css_id}]
+    assert "Risk alerts take priority over normal browsing signals." in result["reasons"]
     assert result["risk_alerts"][0]["rule_id"] == "APACHE-SENSITIVE-FILE"
     assert client.get("/api/bots/export").text == IP + "\n"
 
 
-def test_false_positive_status_immediately_changes_assessment_and_export(workspace):
+@pytest.mark.parametrize("with_css", [False, True])
+def test_false_positive_status_immediately_changes_assessment_and_export(workspace, with_css):
     client, store = workspace
     store.insert_event(event("/"))
     store.insert_event(event("/.env", seconds=1))
+    if with_css:
+        store.insert_event(event("/theme.css", seconds=2))
     detect_events(store)
     alert, = store.list_alerts()
     assert client.get("/api/bots").json["items"][0]["classification"] == "confirmed_bot"
     assert client.patch(f"/api/alerts/{alert.id}/status", json={"status": "false_positive"}).status_code == 200
     result = client.get("/api/bots").json["items"][0]
-    assert result["classification"] == "not_a_bot" and result["risk_alert_count"] == 0
+    assert result["classification"] == ("not_a_bot" if with_css else "suspected_bot")
+    assert result["risk_alert_count"] == 0
     assert client.get("/api/bots/export").text == ""
     store.set_alert_status(alert.id, "new")
     assert assessment(store)["classification"] == "confirmed_bot"
 
 
-def test_global_server_alert_does_not_assign_individual_blame(workspace):
+@pytest.mark.parametrize("with_css", [False, True])
+def test_global_server_alert_does_not_assign_individual_blame(workspace, with_css):
     client, store = workspace
     store.insert_event(event("/"))
+    if with_css:
+        store.insert_event(event("/theme.css"))
     for seconds in range(20):
         store.insert_event(event("/status", status=503, seconds=seconds + 1))
     detect_events(store)
     alert, = store.list_alerts()
     assert alert.alert.rule_id == "APACHE-SERVER-ERRORS" and alert.alert.source_ip is None
-    assert assessment(store)["classification"] == "not_a_bot"
+    assert assessment(store)["classification"] == ("not_a_bot" if with_css else "suspected_bot")
     assert client.get("/api/bots/export").text == ""
 
 
@@ -176,13 +220,15 @@ def test_date_filters_use_linked_evidence_not_alert_first_seen(workspace):
     assert client.get("/api/bots?start=2026-10-21T10:00:00Z").json["items"] == []
 
 
-def test_ip_aggregation_does_not_mix_language_and_assets_from_other_clients(workspace):
+def test_css_evidence_belongs_only_to_the_requesting_ip(workspace):
     _, store = workspace
     store.insert_event(event("/about.html", extensions=' lang:"en"'))
     store.insert_event(event("/style.css", ip="192.0.2.11", seconds=1))
     items, summary = assess_bots(store)
-    assert summary["by_classification"]["suspected_bot"] == 2
-    assert all(item["classification"] == "suspected_bot" for item in items)
+    assert summary["by_classification"]["suspected_bot"] == summary["by_classification"]["not_a_bot"] == 1
+    by_ip = {item["source_ip"]: item for item in items}
+    assert by_ip[IP]["classification"] == "suspected_bot"
+    assert by_ip["192.0.2.11"]["classification"] == "not_a_bot"
 
 
 def test_unattributed_requests_are_counted_without_an_exportable_address(workspace):
@@ -197,7 +243,7 @@ def test_pagination_filters_summaries_canonical_ipv6_and_export_are_consistent(w
     client, store = workspace
     for number in range(1, 31):
         store.insert_event(event("/.env", ip=f"192.0.2.{number}", seconds=number))
-    store.insert_event(event("/", ip="2001:0db8:0:0::1", seconds=31))
+    store.insert_event(event("/main.css", ip="2001:0db8:0:0::1", seconds=31))
     store.insert_event(event("/unknown", ip="198.51.100.1", seconds=32))
     detect_events(store)
     first = client.get("/api/bots?limit=7").json

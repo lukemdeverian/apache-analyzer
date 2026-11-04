@@ -12,6 +12,7 @@ from werkzeug.exceptions import RequestEntityTooLarge, UnsupportedMediaType
 from werkzeug.utils import secure_filename
 
 from app.api import APIError, _invalid, _query, _store, api
+from app.domains import DOMAIN_IDS, get_domain
 from app.ingestion import (
     DecompressedLogTooLargeError, InvalidGzipError, NoApacheRecordsError, parse_error_timezone,
 )
@@ -47,7 +48,7 @@ def import_file() -> tuple[dict, int]:
     _query(set())
     request.max_content_length = MAX_UPLOAD_REQUEST_BYTES
     request.max_form_memory_size = 128 * 1024
-    request.max_form_parts = 4
+    request.max_form_parts = 5
     # A custom header prevents a cross-origin HTML form from submitting a
     # simple multipart request. The API does not enable cross-origin access.
     if request.headers.get("X-Apache-Upload") != "1":
@@ -57,10 +58,13 @@ def import_file() -> tuple[dict, int]:
         raise APIError(403, "origin_not_allowed", "Import files from this application's origin.")
     if request.mimetype != "multipart/form-data":
         raise UnsupportedMediaType("Use multipart/form-data with a file and log_type.")
-    if request.form.keys() - {"log_type", "error_timezone"} or request.files.keys() != {"file"}:
-        _invalid("Provide one file and log_type, with an optional error_timezone.")
+    if request.form.keys() - {"log_type", "error_timezone", "domain_id"} or request.files.keys() != {"file"}:
+        _invalid("Provide one file, domain_id, and log_type, with an optional error_timezone.")
     if any(len(values) != 1 for _, values in (*request.form.lists(), *request.files.lists())):
         _invalid("Import fields must not be repeated.")
+    domain_id = request.form.get("domain_id")
+    if domain_id not in DOMAIN_IDS:
+        _invalid("Choose domain_id: chronoscrate or la_jolla_seals.")
     log_type = request.form.get("log_type")
     if log_type not in ("access", "error"):
         _invalid("log_type must be access or error.")
@@ -77,7 +81,7 @@ def import_file() -> tuple[dict, int]:
     basename = upload.filename.replace("\\", "/").rsplit("/", 1)[-1]
     filename = secure_filename(basename)[:128] or "apache.log"
     source_label = f"upload:{uuid4().hex}/{filename}"
-    with _store() as store:
+    with _store(domain_id) as store:
         with _temporary_upload(upload) as path:
             try:
                 result = analyze_file(path, log_type, store, error_timezone=error_timezone, source_label=source_label)
@@ -98,6 +102,11 @@ def import_file() -> tuple[dict, int]:
                             "Check the file content and selected format. No events or alert changes were saved."
                         ),
                     },
-                    "summary": exc.summary.as_dict(),
+                    "summary": {
+                        **exc.summary.as_dict(), "domain_id": domain_id,
+                        "domain": get_domain(domain_id).as_dict(),
+                    },
                 }, 422
-    return {"summary": result.as_dict()}, 201
+    return {
+        "summary": {**result.as_dict(), "domain_id": domain_id, "domain": get_domain(domain_id).as_dict()},
+    }, 200 if result.import_summary.duplicate_file else 201

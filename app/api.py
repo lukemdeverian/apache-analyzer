@@ -9,12 +9,14 @@ from datetime import datetime, timezone
 from ipaddress import ip_address
 from typing import Any
 
-from flask import Blueprint, Flask, Response, current_app, request
+from flask import Blueprint, Flask, Response, current_app, g, request
 from werkzeug.exceptions import HTTPException, NotFound
 
 from app.alerts import ALERT_STATUSES, SEVERITIES
 from app.bots import CLASSIFICATIONS, assess_bots, policy as bot_policy
 from app.database import get_database, transaction
+from app.domains import DEFAULT_DOMAIN, DOMAINS, DOMAIN_IDS, get_domain
+from app.import_history import duplicate_line_page
 from app.detection import BEHAVIORAL_RULES, REQUEST_RULES, SERVER_RULES
 from app.pipeline import DEFAULT_REQUEST_CORRELATION_SECONDS
 from app.signatures import DEFAULT_ALLOWED_METHODS
@@ -25,7 +27,8 @@ _TIME = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
 )
-_COMMON_FILTERS = {"source_ip", "start", "end"}
+_COMMON_FILTERS = {"source_ip", "start", "end", "domain_id"}
+_DOMAIN_QUERY = {"domain_id"}
 _PAGE_PARAMETERS = {"limit", "offset", "order"}
 
 
@@ -72,6 +75,7 @@ def _timestamp(name: str) -> datetime | None:
 
 
 def _common_filters() -> dict[str, Any]:
+    _request_domain()
     source_ip = request.args.get("source_ip")
     if source_ip is not None:
         try:
@@ -84,6 +88,12 @@ def _common_filters() -> dict[str, Any]:
     if start is not None and end is not None and start > end:
         _invalid("start must not be later than end.")
     return {"source_ip": source_ip, "start": start, "end": end}
+
+
+def _request_domain() -> str:
+    domain_id = _choice("domain_id", DOMAIN_IDS, DEFAULT_DOMAIN)
+    g.apache_domain_id = domain_id
+    return domain_id
 
 
 def _page(default_order: str = "desc") -> dict[str, Any]:
@@ -120,16 +130,18 @@ def _pagination(page: dict[str, Any], total: int, returned: int) -> dict[str, An
 
 
 @contextmanager
-def _store() -> Iterator[SQLiteStore]:
+def _store(domain_id: str | None = None) -> Iterator[SQLiteStore]:
     try:
-        connection = get_database()
+        domain_id = _request_domain() if domain_id is None else domain_id
+        g.apache_domain_id = domain_id
+        connection = get_database(domain_id)
         try:
             store = SQLiteStore(connection)
         except RuntimeError as exc:
             raise APIError(
                 503, "database_not_ready",
                 "Database schema is missing or incompatible. Run 'flask --app app init-db' "
-                "to initialize or upgrade an owned version 1 database. Other schemas require a migration.",
+                "to initialize or upgrade an owned version 1 or 2 database. Other schemas require a migration.",
             ) from exc
         # Lists, counts, details and aggregates share a consistent snapshot.
         # The same boundary makes status writes atomic.
@@ -160,7 +172,7 @@ def events() -> dict[str, Any]:
 
 @api.get("/events/<event_id>")
 def event_detail(event_id: str) -> dict[str, Any]:
-    _query(set())
+    _query(_DOMAIN_QUERY)
     identity = _integer(event_id, "event_id", 1)
     with _store() as store:
         item = store.get_event(identity)
@@ -188,7 +200,7 @@ def alerts() -> dict[str, Any]:
 
 @api.get("/alerts/<alert_id>")
 def alert_detail(alert_id: str) -> dict[str, Any]:
-    _query(set())
+    _query(_DOMAIN_QUERY)
     identity = _integer(alert_id, "alert_id", 1)
     with _store() as store:
         return {"item": _alert(_find_alert(store, identity)), "requested_id": identity}
@@ -196,7 +208,7 @@ def alert_detail(alert_id: str) -> dict[str, Any]:
 
 @api.get("/alerts/<alert_id>/events")
 def alert_evidence(alert_id: str) -> dict[str, Any]:
-    _query({"limit", "offset"})
+    _query({"limit", "offset"} | _DOMAIN_QUERY)
     identity = _integer(alert_id, "alert_id", 1)
     page = _page("asc")
     with _store() as store:
@@ -214,7 +226,7 @@ def alert_evidence(alert_id: str) -> dict[str, Any]:
 
 @api.patch("/alerts/<alert_id>/status")
 def alert_status(alert_id: str) -> dict[str, Any]:
-    _query(set())
+    _query(_DOMAIN_QUERY)
     identity = _integer(alert_id, "alert_id", 1)
     request.max_content_length = 1024
     body = request.get_json()
@@ -231,7 +243,8 @@ def alert_status(alert_id: str) -> dict[str, Any]:
 
 @api.get("/rules")
 def rules() -> dict[str, Any]:
-    _query(set())
+    _query(_DOMAIN_QUERY)
+    _request_domain()
     items = []
     for rule in BEHAVIORAL_RULES + SERVER_RULES + REQUEST_RULES:
         item = {
@@ -273,7 +286,7 @@ def bots() -> dict[str, Any]:
     filters, page = _common_filters(), _page()
     classification = _choice("classification", CLASSIFICATIONS)
     with _store() as store:
-        items, summary = assess_bots(store, **filters)
+        items, summary = assess_bots(store, **filters, hostname=get_domain(_request_domain()).hostname)
     if classification is not None:
         items = [item for item in items if item["classification"] == classification]
     items.sort(key=lambda item: (ip_address(item["source_ip"]).version, int(ip_address(item["source_ip"]))))
@@ -282,7 +295,8 @@ def bots() -> dict[str, Any]:
     total = len(items)
     items = items[page["offset"]:page["offset"] + page["limit"]]
     return {
-        "items": _json_value(items), "summary": summary, "policy": bot_policy(),
+        "items": _json_value(items), "summary": summary,
+        "policy": bot_policy(get_domain(_request_domain()).hostname),
         "pagination": _pagination(page, total, len(items)),
     }
 
@@ -292,14 +306,66 @@ def export_ban_candidates() -> Response:
     _query(_COMMON_FILTERS)
     filters = _common_filters()
     with _store() as store:
-        items, _ = assess_bots(store, **filters)
+        items, _ = assess_bots(store, **filters, hostname=get_domain(_request_domain()).hostname)
     addresses = sorted(
         (item["source_ip"] for item in items if item["classification"] == "confirmed_bot"),
         key=lambda address: (ip_address(address).version, int(ip_address(address))),
     )
     response = Response("".join(address + "\n" for address in addresses), mimetype="text/plain")
-    response.headers["Content-Disposition"] = 'attachment; filename="ban-candidates.txt"'
+    domain_id = _request_domain()
+    filename = "ban-candidates.txt" if domain_id == DEFAULT_DOMAIN else f"ban-candidates-{domain_id}.txt"
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+@api.get("/domains")
+def domains() -> dict[str, Any]:
+    _query(set())
+    return {"items": [domain.as_dict() for domain in DOMAINS], "default_domain_id": DEFAULT_DOMAIN}
+
+
+@api.get("/imports/<import_id>/duplicates")
+def duplicate_import_lines(import_id: str) -> dict[str, Any]:
+    _query({"limit", "offset"} | _DOMAIN_QUERY)
+    identity, page = _integer(import_id, "import_id", 1), _page("asc")
+    with _store() as store:
+        record = store.connection.execute(
+            "SELECT id, source_file, duplicate_lines, legacy FROM imports WHERE id = ?", (identity,),
+        ).fetchone()
+        if record is None:
+            raise NotFound("Import not found.")
+        items = duplicate_line_page(store.connection, identity, limit=page["limit"], offset=page["offset"])
+    return {
+        "import": dict(record), "items": items,
+        "pagination": _pagination(page, record["duplicate_lines"], len(items)),
+    }
+
+
+@api.get("/domains/comparison")
+def domain_comparison() -> dict[str, Any]:
+    _query(_COMMON_FILTERS - _DOMAIN_QUERY)
+    filters = _common_filters()
+    items = []
+    for domain in DOMAINS:
+        with _store(domain.id) as store:
+            stats = store.statistics(**filters)
+            _, bots_summary = assess_bots(store, **filters, hostname=domain.hostname)
+            access_requests = store.count_events(log_type="access", **filters)
+        items.append({
+            "domain": domain.as_dict(), "events": stats["events"], "alerts": stats["alerts"],
+            "bots": bots_summary, "access_requests": access_requests,
+            "alerts_per_1000_requests": (
+                round(stats["alerts"]["total"] * 1000 / access_requests, 2) if access_requests else None
+            ),
+            "confirmed_bot_ip_percent": (
+                round(bots_summary["ban_candidates"] * 100 / bots_summary["total"], 2)
+                if bots_summary["total"] else None
+            ),
+        })
+    return {
+        "items": _json_value(items),
+        "interpretation": "Observed differences between these sites do not establish a DNS/provider effect.",
+    }
 
 
 def _error_response(error: APIError) -> tuple[dict[str, Any], int]:
@@ -331,4 +397,6 @@ def init_app(app: Flask) -> None:
         if request.path == "/api" or request.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
+            if not request.path.startswith("/api/domains") and g.get("apache_domain_id") in DOMAIN_IDS:
+                response.headers["X-Analyzer-Domain"] = g.apache_domain_id
         return response
