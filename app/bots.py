@@ -7,6 +7,7 @@ from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 from app.parsers import access_extensions
+from app.signatures import DEFAULT_ALLOWED_METHODS, RequestInspection, wordpress_probe
 from app.storage import SQLiteStore
 
 SITE_HOST = "chronoscrate.xyz"
@@ -28,6 +29,10 @@ def policy(hostname: str = SITE_HOST) -> dict:
         "normal_signal": "Successful GET of a CSS resource (2xx or 304).",
         "neutral_signals": ["html", "home_page", "checkout", "language"],
         "risk_policy": "Any IP-attributed risk alert except false positives overrides browsing signals.",
+        "wordpress_policy": (
+            "Unexpected WordPress entry-point requests confirm bots even without a saved alert; "
+            "linked false-positive decisions are respected."
+        ),
         "interpretation": "Rule-based labels describe observed history; they do not prove automation or humanity.",
         "scope": "Import this site's logs. Standard Apache layouts do not include the requested host.",
         "sample_limit": SAMPLE_LIMIT,
@@ -66,6 +71,19 @@ def _site_path(target: str | None, path: str | None, hostname: str) -> str | Non
     return path
 
 
+def _dismissed_wordpress_probe(store: SQLiteStore, event_id: int, source_ip: str) -> bool:
+    cursor = store.connection.execute(
+        "SELECT 1 FROM alert_events ae JOIN alerts a ON a.id = ae.alert_id "
+        "WHERE ae.event_id = ? AND a.source_ip = ? "
+        "AND a.rule_id = 'APACHE-WORDPRESS-PROBE' AND a.status = 'false_positive' LIMIT 1",
+        (event_id, source_ip),
+    )
+    try:
+        return cursor.fetchone() is not None
+    finally:
+        cursor.close()
+
+
 @dataclass
 class _Profile:
     source_ip: str
@@ -82,17 +100,27 @@ class _Profile:
     browsing_evidence: dict[str, int] = field(default_factory=dict)
     risk_alert_count: int = 0
     risk_alerts: list[dict] = field(default_factory=list)
+    wordpress_probe_count: int = 0
+    wordpress_probe_evidence: list[dict] = field(default_factory=list)
 
     def result(self) -> dict:
         normal = bool(self.css_requests)
-        classification = "confirmed_bot" if self.risk_alert_count else "not_a_bot" if normal else "suspected_bot"
+        risk = bool(self.risk_alert_count or self.wordpress_probe_count)
+        classification = "confirmed_bot" if risk else "not_a_bot" if normal else "suspected_bot"
         reasons = []
         if self.risk_alert_count:
             reasons.append(f"{self.risk_alert_count} IP-attributed risk alert(s), excluding false positives.")
+        if self.wordpress_probe_count:
+            reasons.append(
+                f"{self.wordpress_probe_count} unexpected WordPress entry-point request(s) on a site without WordPress; "
+                "a single request confirms a bot, including HTTP 404 responses."
+            )
         if self.css_requests:
             reasons.append("Successfully requested CSS.")
         if self.risk_alert_count and normal:
             reasons.append("Risk alerts take priority over normal browsing signals.")
+        elif self.wordpress_probe_count and normal:
+            reasons.append("WordPress probes take priority over normal browsing signals.")
         if classification == "suspected_bot":
             reasons.append("No successful CSS request in the selected history.")
             reasons.append("HTML, page visits, and language preferences are neutral; review before considering a block.")
@@ -113,6 +141,8 @@ class _Profile:
                 {"signal": signal, "event_id": identity} for signal, identity in self.browsing_evidence.items()
             ],
             "risk_alert_count": self.risk_alert_count, "risk_alerts": self.risk_alerts,
+            "wordpress_probe_count": self.wordpress_probe_count,
+            "wordpress_probe_evidence": self.wordpress_probe_evidence,
         }
 
 
@@ -138,6 +168,14 @@ def assess_bots(
         profile = profiles[address]
         profile.request_count += 1
         profile.last_seen = event.timestamp
+        # Existing evidence must classify correctly before a detection rescan.
+        if (
+            wordpress_probe(RequestInspection.from_event(event, DEFAULT_ALLOWED_METHODS))
+            and not _dismissed_wordpress_probe(store, item.id, address)
+        ):
+            profile.wordpress_probe_count += 1
+            if len(profile.wordpress_probe_evidence) < SAMPLE_LIMIT:
+                profile.wordpress_probe_evidence.append({"event_id": item.id})
         fields = access_extensions(event.raw_log)
         logged, languages = _languages(fields)
         profile.language_logged_requests += logged

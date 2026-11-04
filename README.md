@@ -120,9 +120,9 @@ Choose a website, then open **Bot traffic** to review its IPs against the CSS po
 
 | Category | Policy | Action |
 | --- | --- | --- |
-| Confirmed bot | Any IP-attributed risk alert, excluding false positives | Review for blocking |
-| Suspected bot | Insufficient normal browsing evidence and no qualifying risk alert | Monitor or challenge |
-| Not a bot | Successful CSS request, with no qualifying risk alert | Allow and monitor |
+| Confirmed bot | An unexpected WordPress entry-point request or any IP-attributed risk alert, excluding false positives | Review for blocking |
+| Suspected bot | Insufficient normal browsing evidence and no qualifying probe or risk alert | Monitor or challenge |
+| Not a bot | Successful CSS request, with no qualifying probe or risk alert | Allow and monitor |
 
 Risk alerts take priority over normal browsing. Labels are rule-based assessments,
 not proof of automation or humanity. Server-wide alerts do not assign blame to
@@ -130,6 +130,11 @@ individual visitors. After the required schema upgrade, existing imported logs
 work without reimporting. HTML, home/checkout visits, and language preferences are neutral
 context. Successful CSS requests qualify without HTML or a language header.
 Missing CSS alone does not justify blocking an IP.
+
+A single `/wp-admin/install.php?step=1` request confirms a bot even with a 404
+response, CSS activity, or language headers. This applies to existing evidence
+without a reimport or detection rescan. Explicit false-positive decisions on linked
+WordPress alerts still exclude those requests.
 
 Use **Review IP** for reasons and evidence links. All classifications, including
 suspected bots with no alerts, show a paginated request history with raw-record

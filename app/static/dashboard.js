@@ -205,8 +205,16 @@
       ["Requests with a logged language field", item.language_logged_requests],
       ["Observed languages", item.languages.join(", ") || "Not observed"],
       ["Risk alerts", item.risk_alert_count],
+      ["WordPress probes", item.wordpress_probe_count],
     ]);
     $("bot-reasons").replaceChildren(...item.reasons.map((reason) => element("li", reason)));
+    $("bot-wordpress-evidence").replaceChildren(...(item.wordpress_probe_evidence.length
+      ? item.wordpress_probe_evidence.map((proof) => {
+        const button = element("button", "WordPress probe · Event #" + proof.event_id, "text-button");
+        button.type = "button";
+        button.addEventListener("click", () => openEvent(proof.event_id));
+        return button;
+      }) : [element("p", "No WordPress probes in this selection, excluding false positives.", "muted")]));
     $("bot-risk-evidence").replaceChildren(...(item.risk_alerts.length
       ? item.risk_alerts.map((alert) => {
         const button = element("button", "#" + alert.id + " " + alert.title + " · " + alert.status, "text-button");

@@ -19,8 +19,8 @@ Rules are evaluated in this order:
 
 | Category | Evidence | Recommendation |
 | --- | --- | --- |
-| Confirmed bot | Any risk alert attributed to this IP and linked to access evidence in the selected history | Review for blocking |
-| Not a bot | No qualifying risk alert, plus a successful CSS request | Allow and monitor |
+| Confirmed bot | An unexpected WordPress entry-point request or any risk alert attributed to this IP and linked to access evidence in the selected history | Review for blocking |
+| Not a bot | No qualifying probe or risk alert, plus a successful CSS request | Allow and monitor |
 | Suspected bot | Neither of the above; insufficient normal browsing evidence | Monitor or challenge |
 
 **Any IP-attributed risk alert overrides normal browsing**, regardless of severity.
@@ -32,7 +32,12 @@ an individual malicious visitor and are not assigned to every IP involved.
 An unexpected WordPress entry point such as `/wp-admin/install.php?step=1`
 produces an IP-attributed `APACHE-WORDPRESS-PROBE` alert from one request,
 including a 404 response. It takes priority over CSS requests and language
-headers. See the [detection catalog](DETECTIONS.md) for matching and rescan commands.
+headers. Bot assessment also checks the stored request path directly, so existing
+requests confirm bots without a saved alert, reimport, or detection rescan. A
+false-positive decision on a linked WordPress alert excludes its requests from
+this direct check; it does not exempt other requests by the same IP. The details
+show probe counts and up to ten raw-record links. Probe counts exclude dismissed
+requests. See the [detection catalog](DETECTIONS.md) for matching and rescan commands.
 
 Verify address attribution before acting on a ban candidate. For example,
 `104.23.187.194` falls within `104.16.0.0/13` on
@@ -133,7 +138,8 @@ last-seen times within each category.
 
 The response contains `items`, `pagination`, `summary`, and `policy`. Each item
 includes reasons, recommendation, timestamps, counts, bounded language samples,
-risk-alert samples, and CSS evidence event IDs. HTML/page/language counts are
+risk-alert samples, CSS evidence event IDs, `wordpress_probe_count`, and up to ten
+`wordpress_probe_evidence` event IDs. HTML/page/language counts are
 informational. Policy metadata exposes the CSS criterion and neutral signals;
 the previous HTML/language sequence and its five-minute window have been removed.
 Summary counts precede the category

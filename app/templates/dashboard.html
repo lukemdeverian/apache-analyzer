@@ -110,7 +110,7 @@
     </section>
 
     <section id="view-bots" data-section="bots" aria-label="Bot traffic" hidden>
-      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. Any IP-attributed risk alert takes priority. Labels are rule-based; review source-IP attribution before applying a block.</p>
+      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. An unexpected WordPress entry-point request confirms a bot, including a 404 response. WordPress probes and IP-attributed risk alerts take priority; false positives are excluded. Labels are rule-based; review source-IP attribution before applying a block.</p>
       <div class="stat-grid bot-stats">
         <article class="stat"><p>Confirmed bot</p><strong id="bot-confirmed">—</strong><span>Review for blocking</span></article>
         <article class="stat"><p>Suspected bot</p><strong id="bot-suspected">—</strong><span>Monitor or challenge</span></article>
@@ -195,6 +195,7 @@
       </table></div><div id="bot-request-pagination" class="pagination"></div>
     </section>
     <h3>Linked risk alerts</h3><div id="bot-risk-evidence" class="bot-evidence"></div>
+    <h3>WordPress probe evidence</h3><div id="bot-wordpress-evidence" class="bot-evidence"></div>
     <h3>CSS evidence</h3><div id="bot-browsing-evidence" class="bot-evidence"></div>
     <p class="footnote">CSS requests suggest normal browsing; HTML and language are context only. The log cannot prove a visitor is human. Missing CSS alone is not grounds for a ban. IPs may represent multiple visitors.</p>
   </dialog>
