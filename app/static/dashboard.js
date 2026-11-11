@@ -208,7 +208,17 @@
       ["Risk alerts", item.risk_alert_count],
       ["WordPress probes", item.wordpress_probe_count],
       ["Threat intelligence hits", item.threat_intel_hits],
+      ["Requests with an automated User-Agent", item.declared_agent_count],
     ]);
+    $("bot-user-agent-evidence").replaceChildren(...(item.declared_agents.length
+      ? item.declared_agents.map((agent) => {
+        const button = element("button", agent.label + ": " + agent.name + " · " + agent.requests +
+          " request(s) · Event #" + agent.event_id, "text-button");
+        button.type = "button";
+        button.title = agent.user_agent || "No User-Agent";
+        button.addEventListener("click", () => openEvent(agent.event_id));
+        return button;
+      }) : [element("p", "No declared crawler, scanner, or HTTP-library User-Agent in this selection.", "muted")]));
     $("bot-reasons").replaceChildren(...item.reasons.map((reason) => element("li", reason)));
     $("bot-wordpress-evidence").replaceChildren(...(item.wordpress_probe_evidence.length
       ? item.wordpress_probe_evidence.map((proof) => {
@@ -280,9 +290,10 @@
     $("bot-confirmed").textContent = summary.by_classification.confirmed_bot.toLocaleString();
     $("bot-suspected").textContent = summary.by_classification.suspected_bot.toLocaleString();
     $("bot-normal").textContent = summary.by_classification.not_a_bot.toLocaleString();
-    $("bot-confirmed-detail").textContent = summary.threat_intel_confirmed
-      ? "Review for blocking · " + summary.threat_intel_confirmed.toLocaleString() + " flagged by threat intel"
-      : "Review for blocking";
+    const flagged = [];
+    if (summary.declared_agent_confirmed) flagged.push(summary.declared_agent_confirmed.toLocaleString() + " by User-Agent");
+    if (summary.threat_intel_confirmed) flagged.push(summary.threat_intel_confirmed.toLocaleString() + " by threat intel");
+    $("bot-confirmed-detail").textContent = "Review for blocking" + (flagged.length ? " · " + flagged.join(", ") : "");
     $("bot-scope").textContent = summary.total + " IPs assessed. " + summary.unattributed_requests +
       " access requests lack a usable IP. Counts cover the shared IP/date filters.";
     $("export-bots").disabled = summary.ban_candidates === 0;

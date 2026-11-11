@@ -120,7 +120,7 @@ def read_reputation(cache_path: str | Path) -> dict[str, list[dict]]:
 def describe(result: Mapping) -> str:
     if result["provider"] == "abuseipdb":
         return f"AbuseIPDB abuse confidence score {result['score']} (threshold {result['threshold']})."
-    return f"AlienVault OTX lists this IP in {result['score']} threat pulse(s) (threshold {result['threshold']})."
+    return f"AlienVault OTX reputation {result['score']} marks this IP as malicious (threshold {result['threshold']})."
 
 
 def eligible_ip(value: str) -> bool:

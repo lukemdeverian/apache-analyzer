@@ -81,6 +81,27 @@ Sensitive paths include `.git`, `.svn`, `.hg`, `.env` variants, `.htaccess`,
 `id_ed25519`, plus suffixes `.sql`, `.sqlite`, `.sqlite3`, `.db`, `.bak`,
 `.old`, `.orig`, `.swp`, and `~`. Filename comparisons ignore case.
 
+## User-Agent classification
+
+User-Agent matching runs at assessment time, not import time, so no rescan is
+needed after adding new log files. It is not a risk alert and produces no alert
+ID; instead it sets or confirms the bot category directly. See
+[User-Agent evidence](BOT_TRAFFIC.md#user-agent-evidence) for the full policy.
+
+| Check | What it matches | Example |
+| --- | --- | --- |
+| Missing User-Agent | `"-"` or blank in a combined/extended-combined log line that has a request method | `"POST / HTTP/1.1" 200 … "-" "-"` |
+| Security scanner | Exact names of known scanners and internet-survey tools | `zgrab`, `CensysInspect`, `Palo Alto Networks` (Xpanse), `Infrawatch`, `sqlmap`, `Nuclei`, `Hello, World`, `Odin`, `ModatScanner` |
+| AI crawler or agent | Tokens from the vendored [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt) list, shown with the operator name | `GPTBot (OpenAI)`, `ClaudeBot (Anthropic)`, `Bytespider (ByteDance)`, `PerplexityBot` |
+| Automation tool or HTTP library | Leading tool tokens, headless browsers, or a bare `Mozilla/5.0` | `curl`, `python-requests`, `Go-http-client`, `HeadlessChrome`, `python-urllib` |
+| Self-declared crawler | Any word ending in `bot`, `crawler`, `spider`, `scraper`, `scanner`, or `Slurp` | `Googlebot`, `bingbot`, `AhrefsBot`, `360Spider` |
+
+Checks run in the order above; the first match names the agent. A `"-" 408`
+line is a spare browser connection that timed out before sending a request and
+carries no headers; it is excluded. Common-format logs do not record the
+User-Agent, so a missing header there is not flagged. CUBOT (an Android phone
+brand) is excluded from the crawler check.
+
 ## Server-wide windows
 
 These rules combine records across clients and imported files in the same

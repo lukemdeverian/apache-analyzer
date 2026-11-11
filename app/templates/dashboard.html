@@ -110,7 +110,7 @@
     </section>
 
     <section id="view-bots" data-section="bots" aria-label="Bot traffic" hidden>
-      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. An unexpected WordPress entry-point request confirms a bot, including a 404 response. An AbuseIPDB abuse confidence score of 70 or more, or an AlienVault OTX listing in a threat pulse, also confirms a bot (select Check IP reputation). WordPress probes, reputation hits, and IP-attributed risk alerts take priority; false positives are excluded. Labels are rule-based; review source-IP attribution before applying a block.</p>
+      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. An unexpected WordPress entry-point request confirms a bot, including a 404 response. An AbuseIPDB abuse confidence score of 70 or more, or an AlienVault OTX reputation of 1 (malicious), also confirms a bot (select Check IP reputation). So does a User-Agent that declares a crawler, AI agent, scanner, or HTTP library, or a request with no User-Agent. WordPress probes, reputation hits, declared User-Agents, and IP-attributed risk alerts take priority; false positives are excluded. Labels are rule-based; review source-IP attribution before applying a block.</p>
       <div class="stat-grid bot-stats">
         <article class="stat"><p>Confirmed bot</p><strong id="bot-confirmed">—</strong><span id="bot-confirmed-detail">Review for blocking</span></article>
         <article class="stat"><p>Suspected bot</p><strong id="bot-suspected">—</strong><span>Monitor or challenge</span></article>
@@ -198,6 +198,7 @@
     </section>
     <h3>Linked risk alerts</h3><div id="bot-risk-evidence" class="bot-evidence"></div>
     <h3>WordPress probe evidence</h3><div id="bot-wordpress-evidence" class="bot-evidence"></div>
+    <h3>User-Agent evidence</h3><div id="bot-user-agent-evidence" class="bot-evidence"></div>
     <h3>CSS evidence</h3><div id="bot-browsing-evidence" class="bot-evidence"></div>
     <h3>Threat intelligence</h3><div id="bot-threat-intel" class="bot-evidence"></div>
     <p class="footnote">CSS requests suggest normal browsing; HTML and language are context only. The log cannot prove a visitor is human. Missing CSS alone is not grounds for a ban. IPs may represent multiple visitors.</p>

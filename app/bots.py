@@ -11,6 +11,9 @@ from app.parsers import access_extensions
 from app.signatures import DEFAULT_ALLOWED_METHODS, RequestInspection, wordpress_probe
 from app.storage import SQLiteStore
 from app.threat_intel import THRESHOLDS, describe as describe_reputation
+from app.user_agents import declared_agent
+
+USER_AGENT_FORMATS = frozenset({"combined", "extended_combined"})
 
 SITE_HOST = "chronoscrate.xyz"
 CLASSIFICATIONS = ("confirmed_bot", "suspected_bot", "not_a_bot")
@@ -37,7 +40,11 @@ def policy(hostname: str = SITE_HOST) -> dict:
         ),
         "threat_intel_policy": (
             f"AbuseIPDB abuse confidence score of {THRESHOLDS['abuseipdb']} or higher, or an AlienVault OTX "
-            f"listing in {THRESHOLDS['otx']} or more threat pulses, confirms a bot. Results come from cached lookups."
+            "reputation of 1 (malicious), confirms a bot. Results come from cached lookups."
+        ),
+        "user_agent_policy": (
+            "A User-Agent that declares a crawler, AI agent, scanner, or HTTP library, or a missing "
+            "User-Agent in a combined log, confirms a bot. Browser-like User-Agents prove nothing."
         ),
         "interpretation": "Rule-based labels describe observed history; they do not prove automation or humanity.",
         "scope": "Import this site's logs. Standard Apache layouts do not include the requested host.",
@@ -109,11 +116,24 @@ class _Profile:
     wordpress_probe_count: int = 0
     wordpress_probe_evidence: list[dict] = field(default_factory=list)
     threat_intel: list[dict] = field(default_factory=list)
+    declared_agent_count: int = 0
+    declared_agents: dict[tuple[str, str], dict] = field(default_factory=dict)
+
+    def add_declared_agent(self, agent, user_agent: str | None, event_id: int) -> None:
+        self.declared_agent_count += 1
+        key = (agent.category, agent.name.casefold())
+        if key in self.declared_agents:
+            self.declared_agents[key]["requests"] += 1
+        elif len(self.declared_agents) < SAMPLE_LIMIT:
+            self.declared_agents[key] = {
+                "category": agent.category, "label": agent.label, "name": agent.name,
+                "reason": agent.reason(), "user_agent": user_agent, "event_id": event_id, "requests": 1,
+            }
 
     def result(self) -> dict:
         normal = bool(self.css_requests)
         intel_hits = [result for result in self.threat_intel if result["malicious"]]
-        risk = bool(self.risk_alert_count or self.wordpress_probe_count or intel_hits)
+        risk = bool(self.risk_alert_count or self.wordpress_probe_count or intel_hits or self.declared_agent_count)
         classification = "confirmed_bot" if risk else "not_a_bot" if normal else "suspected_bot"
         reasons = []
         if self.risk_alert_count:
@@ -124,6 +144,8 @@ class _Profile:
                 "a single request confirms a bot, including HTTP 404 responses."
             )
         reasons.extend(describe_reputation(result) for result in intel_hits)
+        for agent in self.declared_agents.values():
+            reasons.append(agent["reason"] + f" ({agent['requests']} request(s))")
         if self.css_requests:
             reasons.append("Successfully requested CSS.")
         if self.risk_alert_count and normal:
@@ -132,6 +154,8 @@ class _Profile:
             reasons.append("WordPress probes take priority over normal browsing signals.")
         elif intel_hits and normal:
             reasons.append("Threat intelligence takes priority over normal browsing signals.")
+        elif self.declared_agent_count and normal:
+            reasons.append("A declared automated User-Agent takes priority over normal browsing signals.")
         if classification == "suspected_bot":
             reasons.append("No successful CSS request in the selected history.")
             reasons.append("HTML, page visits, and language preferences are neutral; review before considering a block.")
@@ -155,6 +179,8 @@ class _Profile:
             "wordpress_probe_count": self.wordpress_probe_count,
             "wordpress_probe_evidence": self.wordpress_probe_evidence,
             "threat_intel": self.threat_intel, "threat_intel_hits": len(intel_hits),
+            "declared_agent_count": self.declared_agent_count,
+            "declared_agents": list(self.declared_agents.values()),
         }
 
 
@@ -192,6 +218,12 @@ def assess_bots(
             profile.wordpress_probe_count += 1
             if len(profile.wordpress_probe_evidence) < SAMPLE_LIMIT:
                 profile.wordpress_probe_evidence.append({"event_id": item.id})
+        # Common-format logs never record the header, so absence means nothing there.
+        if event.log_format in USER_AGENT_FORMATS and (agent := declared_agent(event.user_agent)) is not None:
+            # Browsers open spare connections that time out (408) before sending a
+            # request line or headers; only a received request can omit the header.
+            if agent.category != "missing" or event.method is not None:
+                profile.add_declared_agent(agent, event.user_agent, item.id)
         fields = access_extensions(event.raw_log)
         logged, languages = _languages(fields)
         profile.language_logged_requests += logged
@@ -250,4 +282,5 @@ def assess_bots(
     summary["ban_candidates"] = summary["by_classification"]["confirmed_bot"]
     summary["threat_intel_confirmed"] = sum(1 for item in items if item["threat_intel_hits"])
     summary["threat_intel_checked"] = sum(1 for item in items if item["threat_intel"])
+    summary["declared_agent_confirmed"] = sum(1 for item in items if item["declared_agent_count"])
     return items, summary

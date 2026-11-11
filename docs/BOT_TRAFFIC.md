@@ -19,7 +19,7 @@ Rules are evaluated in this order:
 
 | Category | Evidence | Recommendation |
 | --- | --- | --- |
-| Confirmed bot | An unexpected WordPress entry-point request, any risk alert attributed to this IP and linked to access evidence in the selected history, or a cached threat-intelligence hit (AbuseIPDB score ≥ 70 or an OTX listing in ≥ 1 pulse) | Review for blocking |
+| Confirmed bot | An unexpected WordPress entry-point request, any risk alert attributed to this IP and linked to access evidence in the selected history, a cached threat-intelligence hit (AbuseIPDB score ≥ 70 or OTX reputation 1), or a [User-Agent that declares automation](#user-agent-evidence) | Review for blocking |
 | Not a bot | No qualifying probe or risk alert, plus a successful CSS request | Allow and monitor |
 | Suspected bot | Neither of the above; insufficient normal browsing evidence | Monitor or challenge |
 
@@ -111,9 +111,50 @@ website's IPs in batches of 20 until done or out of keys, or run:
 
 Only public (globally routable) IPs that are not already confirmed by local
 evidence are sent. Results are cached in `instance/threat_intel.sqlite3`, shared
-by both websites, and reused for 7 days (`--refresh` or `?refresh=true`
+by both websites, and never expire (`--refresh` or `?refresh=true`
 re-checks). Reputation is third-party opinion: shared cloud, VPN, and proxy
 addresses can be listed because of other users. Review before blocking.
+
+## User-Agent evidence
+
+A client that announces itself as automated is a bot by its own account, so one
+such request confirms the IP and overrides CSS evidence. The rules come from
+[Cloudflare's bot score](https://developers.cloudflare.com/bots/concepts/bot-score/)
+(a missing User-Agent is scored as automated) and the log-only method in
+[Shy Guys (arXiv 2603.28546)](https://arxiv.org/abs/2603.28546). Checks run in
+this order, and the first match names the agent:
+
+| Category | Matches | Example |
+| --- | --- | --- |
+| Missing User-Agent | `"-"` or blank in a combined log, when a request line was received | `"POST / HTTP/1.1" 200 … "-" "-"` |
+| Security scanner | Known scanner and internet-survey names | `zgrab`, `CensysInspect`, `Palo Alto Networks` (Xpanse), `Infrawatch`, `sqlmap`, `Nuclei`, `Hello, World` |
+| AI crawler or agent | Tokens from the [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt) list, with the operator | `GPTBot (OpenAI)`, `ClaudeBot`, `Bytespider`, `CCBot`, `PerplexityBot` |
+| Automation tool or HTTP library | Leading tool tokens, headless browsers, or a bare `Mozilla/5.0` | `curl/8.4.0`, `python-requests`, `Go-http-client`, `HeadlessChrome` |
+| Self-declared crawler | Any word ending in `bot`, `crawler`, `spider`, `scraper`, `scanner`, or `Slurp` | `Googlebot`, `bingbot`, `AhrefsBot`, `360Spider` |
+
+Exclusions that prevent false positives:
+
+- Common-format logs never record the header, so absence there means nothing.
+- A `"-" 408` line is a spare browser connection that timed out before sending
+  anything; it has no headers to judge.
+- ai.robots.txt tokens that are ordinary words or desktop-app names (`Code`,
+  `Cursor`, `Dot`, `Operator`, `Muse`, and others in `_AMBIGUOUS_AI_TOKENS`)
+  are skipped because they appear in Electron app User-Agents.
+- `CUBOT` (an Android phone brand) is not treated as a crawler name.
+
+The bot details list each distinct agent (up to ten) with its request count and
+a link to the first matching record; hover the link to see the full header.
+
+**Limits.** A browser-like User-Agent proves nothing; scrapers copy real Chrome
+strings, and those IPs stay in Suspected unless other evidence applies. Search
+engines that declare themselves (Googlebot, bingbot) are also confirmed and
+exported. Check them against the operator's published IP ranges before
+blocking. Legitimate crawlers can be impersonated, and a genuine crawler may
+be one you want to allow.
+
+The ai.robots.txt list is vendored in `app/data/ai_robots.json` under its MIT
+license (`app/data/ai_robots.LICENSE`). To update it, replace the file with
+the upstream `robots.json`; no reimport is needed.
 
 ## Apache logging
 
@@ -201,6 +242,9 @@ key status (`keys_rate_limited`, `keys_rejected`, `stopped`). It returns 409
 `threat_intel_not_configured` when no keys are set. Bot items include
 `threat_intel` (cached results with score, threshold, and `malicious`) and
 `threat_intel_hits`; the summary adds `threat_intel_confirmed` and `threat_intel_checked`.
+Items also include `declared_agent_count` and `declared_agents` (category,
+label, name, reason, raw `user_agent`, first `event_id`, and `requests`); the
+summary adds `declared_agent_confirmed`, and `policy` adds `user_agent_policy`.
 
 ```powershell
 Invoke-RestMethod 'http://127.0.0.1:5000/api/bots?classification=confirmed_bot&limit=25'

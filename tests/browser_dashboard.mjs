@@ -571,6 +571,25 @@ try {
   await click("#alert-dialog [data-close]");
   assert.deepEqual(exceptions, [], "Unexpected browser errors in WordPress detection.");
   console.log("PASS single WordPress installer probe classified as confirmed despite CSS/language, with raw 404 evidence");
+  await click("#clear-filters");
+  const crawlerIp = "198.51.100.92";
+  await importLog(crawlerIp + ' - - [24/Sep/2026:09:30:00 +0000] "GET /style.css HTTP/1.1" 200 100 "-" ' +
+    '"Mozilla/5.0 (compatible; GPTBot/1.4; +https://openai.com/gptbot)"\n', "access", "UTC", "declared-crawler.log");
+  await click("#import-dialog [data-close]");
+  await field('#common-filters [name="source_ip"]', crawlerIp);
+  await submit("#common-filters");
+  await waitFor("document.querySelectorAll('#bot-rows .row-link').length === 1", "declared crawler IP");
+  assert.match(await evaluate("document.getElementById('bot-confirmed-detail').textContent"), /1 by User-Agent/);
+  await click("#bot-rows .row-link");
+  assert.match(await evaluate("document.getElementById('bot-title').textContent"), /Confirmed bot/);
+  assert.match(await evaluate("document.getElementById('bot-reasons').textContent"), /AI crawler or agent in User-Agent: GPTBot \(OpenAI\)/);
+  assert.match(await evaluate("document.querySelector('#bot-user-agent-evidence button').title"), /GPTBot\/1\.4/);
+  await click("#bot-user-agent-evidence button");
+  await waitFor("document.getElementById('raw-log').textContent.includes('GPTBot/1.4')", "declared User-Agent raw evidence");
+  await click("#event-dialog [data-close]");
+  await click("#bot-dialog [data-close]");
+  assert.deepEqual(exceptions, [], "Unexpected browser errors in User-Agent evidence.");
+  console.log("PASS declared AI crawler confirmed over CSS, with User-Agent evidence link and raw record");
   console.log("All browser checks passed.");
 } catch (error) {
   console.error(error);
