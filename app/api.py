@@ -14,13 +14,16 @@ from werkzeug.exceptions import HTTPException, NotFound
 
 from app.alerts import ALERT_STATUSES, SEVERITIES
 from app.bots import CLASSIFICATIONS, assess_bots, policy as bot_policy
-from app.database import get_database, transaction
+from app.database import domain_database_path, get_database, transaction
 from app.domains import DEFAULT_DOMAIN, DOMAINS, DOMAIN_IDS, get_domain
 from app.import_history import duplicate_line_page
 from app.detection import BEHAVIORAL_RULES, REQUEST_RULES, SERVER_RULES
 from app.pipeline import DEFAULT_REQUEST_CORRELATION_SECONDS
 from app.signatures import DEFAULT_ALLOWED_METHODS
 from app.storage import SQLiteStore, StoredAlert, StoredEvent
+from app.threat_intel import (
+    DEFAULT_KEYS_PATH, ThreatIntelConfigError, cache_path_for, check_ips, eligible_ip, load_keys, read_reputation,
+)
 
 api = Blueprint("api", __name__, url_prefix="/api")
 _TIME = re.compile(
@@ -150,6 +153,19 @@ def _store(domain_id: str | None = None) -> Iterator[SQLiteStore]:
     except (sqlite3.Error, OSError, ValueError) as exc:
         current_app.logger.exception("Investigation API database operation failed.")
         raise APIError(503, "database_unavailable", "The local database is unavailable.") from exc
+
+
+def _cache_path() -> str:
+    return cache_path_for(domain_database_path(DEFAULT_DOMAIN))
+
+
+def _reputation() -> dict[str, list[dict]]:
+    """Cached lookups only; viewing assessments never contacts a provider."""
+    try:
+        return read_reputation(_cache_path())
+    except (sqlite3.Error, OSError) as exc:
+        current_app.logger.exception("Threat intelligence cache could not be read.")
+        raise APIError(503, "threat_intel_unavailable", "The threat intelligence cache is unavailable.") from exc
 
 
 def _find_alert(store: SQLiteStore, alert_id: int) -> StoredAlert:
@@ -285,8 +301,11 @@ def bots() -> dict[str, Any]:
     _query(_COMMON_FILTERS | _PAGE_PARAMETERS | {"classification"})
     filters, page = _common_filters(), _page()
     classification = _choice("classification", CLASSIFICATIONS)
+    reputation = _reputation()
     with _store() as store:
-        items, summary = assess_bots(store, **filters, hostname=get_domain(_request_domain()).hostname)
+        items, summary = assess_bots(
+            store, **filters, hostname=get_domain(_request_domain()).hostname, reputation=reputation,
+        )
     if classification is not None:
         items = [item for item in items if item["classification"] == classification]
     items.sort(key=lambda item: (ip_address(item["source_ip"]).version, int(ip_address(item["source_ip"]))))
@@ -305,8 +324,11 @@ def bots() -> dict[str, Any]:
 def export_ban_candidates() -> Response:
     _query(_COMMON_FILTERS)
     filters = _common_filters()
+    reputation = _reputation()
     with _store() as store:
-        items, _ = assess_bots(store, **filters, hostname=get_domain(_request_domain()).hostname)
+        items, _ = assess_bots(
+            store, **filters, hostname=get_domain(_request_domain()).hostname, reputation=reputation,
+        )
     addresses = sorted(
         (item["source_ip"] for item in items if item["classification"] == "confirmed_bot"),
         key=lambda address: (ip_address(address).version, int(ip_address(address))),
@@ -316,6 +338,48 @@ def export_ban_candidates() -> Response:
     filename = "ban-candidates.txt" if domain_id == DEFAULT_DOMAIN else f"ban-candidates-{domain_id}.txt"
     response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+@api.post("/bots/threat-intel")
+def bot_threat_intel() -> dict[str, Any]:
+    """Look up one bounded batch of unconfirmed public IPs; call again to continue."""
+    _query(_COMMON_FILTERS | {"refresh"})
+    filters = _common_filters()
+    refresh = _choice("refresh", ("true", "false"), "false") == "true"
+    # A JSON body forces a CORS preflight, so other websites cannot spend API quota.
+    request.max_content_length = 1024
+    if not request.is_json or request.get_json(silent=True) != {}:
+        _invalid("Send an empty JSON object ({}) with Content-Type: application/json.")
+    try:
+        keys = load_keys(current_app.config.get("THREAT_INTEL_KEYS_PATH", DEFAULT_KEYS_PATH))
+    except ThreatIntelConfigError as exc:
+        raise APIError(409, "threat_intel_not_configured", str(exc)) from exc
+    if not any(keys.values()):
+        raise APIError(
+            409, "threat_intel_not_configured",
+            "No API keys are configured. Add AbuseIPDB and/or OTX keys to threat_intel_keys.toml.",
+        )
+    reputation = _reputation()
+    with _store() as store:
+        items, _ = assess_bots(
+            store, **filters, hostname=get_domain(_request_domain()).hostname, reputation=reputation,
+        )
+    # Already-confirmed IPs need no quota; reputation can only move IPs into Confirmed bot.
+    addresses = [
+        item["source_ip"] for item in items
+        if item["classification"] != "confirmed_bot" and eligible_ip(item["source_ip"])
+    ]
+    fetch = current_app.config.get("THREAT_INTEL_FETCH")
+    options = {"fetch": fetch} if fetch is not None else {}
+    try:
+        result = check_ips(
+            addresses, keys=keys, cache_path=_cache_path(), refresh=refresh,
+            limit=current_app.config.get("THREAT_INTEL_BATCH_SIZE", 20), **options,
+        )
+    except (sqlite3.Error, OSError) as exc:
+        current_app.logger.exception("Threat intelligence lookups failed.")
+        raise APIError(503, "threat_intel_unavailable", "The threat intelligence cache is unavailable.") from exc
+    return result
 
 
 @api.get("/domains")
@@ -346,10 +410,11 @@ def domain_comparison() -> dict[str, Any]:
     _query(_COMMON_FILTERS - _DOMAIN_QUERY)
     filters = _common_filters()
     items = []
+    reputation = _reputation()
     for domain in DOMAINS:
         with _store(domain.id) as store:
             stats = store.statistics(**filters)
-            _, bots_summary = assess_bots(store, **filters, hostname=domain.hostname)
+            _, bots_summary = assess_bots(store, **filters, hostname=domain.hostname, reputation=reputation)
             access_requests = store.count_events(log_type="access", **filters)
         items.append({
             "domain": domain.as_dict(), "events": stats["events"], "alerts": stats["alerts"],

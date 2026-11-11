@@ -3,12 +3,14 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from collections.abc import Mapping
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 from app.parsers import access_extensions
 from app.signatures import DEFAULT_ALLOWED_METHODS, RequestInspection, wordpress_probe
 from app.storage import SQLiteStore
+from app.threat_intel import THRESHOLDS, describe as describe_reputation
 
 SITE_HOST = "chronoscrate.xyz"
 CLASSIFICATIONS = ("confirmed_bot", "suspected_bot", "not_a_bot")
@@ -32,6 +34,10 @@ def policy(hostname: str = SITE_HOST) -> dict:
         "wordpress_policy": (
             "Unexpected WordPress entry-point requests confirm bots even without a saved alert; "
             "linked false-positive decisions are respected."
+        ),
+        "threat_intel_policy": (
+            f"AbuseIPDB abuse confidence score of {THRESHOLDS['abuseipdb']} or higher, or an AlienVault OTX "
+            f"listing in {THRESHOLDS['otx']} or more threat pulses, confirms a bot. Results come from cached lookups."
         ),
         "interpretation": "Rule-based labels describe observed history; they do not prove automation or humanity.",
         "scope": "Import this site's logs. Standard Apache layouts do not include the requested host.",
@@ -102,10 +108,12 @@ class _Profile:
     risk_alerts: list[dict] = field(default_factory=list)
     wordpress_probe_count: int = 0
     wordpress_probe_evidence: list[dict] = field(default_factory=list)
+    threat_intel: list[dict] = field(default_factory=list)
 
     def result(self) -> dict:
         normal = bool(self.css_requests)
-        risk = bool(self.risk_alert_count or self.wordpress_probe_count)
+        intel_hits = [result for result in self.threat_intel if result["malicious"]]
+        risk = bool(self.risk_alert_count or self.wordpress_probe_count or intel_hits)
         classification = "confirmed_bot" if risk else "not_a_bot" if normal else "suspected_bot"
         reasons = []
         if self.risk_alert_count:
@@ -115,12 +123,15 @@ class _Profile:
                 f"{self.wordpress_probe_count} unexpected WordPress entry-point request(s) on a site without WordPress; "
                 "a single request confirms a bot, including HTTP 404 responses."
             )
+        reasons.extend(describe_reputation(result) for result in intel_hits)
         if self.css_requests:
             reasons.append("Successfully requested CSS.")
         if self.risk_alert_count and normal:
             reasons.append("Risk alerts take priority over normal browsing signals.")
         elif self.wordpress_probe_count and normal:
             reasons.append("WordPress probes take priority over normal browsing signals.")
+        elif intel_hits and normal:
+            reasons.append("Threat intelligence takes priority over normal browsing signals.")
         if classification == "suspected_bot":
             reasons.append("No successful CSS request in the selected history.")
             reasons.append("HTML, page visits, and language preferences are neutral; review before considering a block.")
@@ -143,15 +154,17 @@ class _Profile:
             "risk_alert_count": self.risk_alert_count, "risk_alerts": self.risk_alerts,
             "wordpress_probe_count": self.wordpress_probe_count,
             "wordpress_probe_evidence": self.wordpress_probe_evidence,
+            "threat_intel": self.threat_intel, "threat_intel_hits": len(intel_hits),
         }
 
 
 def assess_bots(
     store: SQLiteStore, *, source_ip: str | None = None,
     start: datetime | None = None, end: datetime | None = None,
-    hostname: str = SITE_HOST,
+    hostname: str = SITE_HOST, reputation: Mapping[str, list[dict]] | None = None,
 ) -> tuple[list[dict], dict]:
-    """Derive assessments from current evidence and analyst decisions; never ban."""
+    """Derive assessments from current evidence, analyst decisions, and cached
+    reputation lookups; never ban and never call an external service."""
     profiles: dict[str, _Profile] = {}
     unattributed = 0
     for item in store.iter_events(source_ip=source_ip, log_type="access", start=start, end=end):
@@ -164,7 +177,10 @@ def assess_bots(
             unattributed += 1
             continue
         if address not in profiles:
-            profiles[address] = _Profile(address, event.timestamp, event.timestamp)
+            profiles[address] = _Profile(
+                address, event.timestamp, event.timestamp,
+                threat_intel=list((reputation or {}).get(address, ())),
+            )
         profile = profiles[address]
         profile.request_count += 1
         profile.last_seen = event.timestamp
@@ -232,4 +248,6 @@ def assess_bots(
     for item in items:
         summary["by_classification"][item["classification"]] += 1
     summary["ban_candidates"] = summary["by_classification"]["confirmed_bot"]
+    summary["threat_intel_confirmed"] = sum(1 for item in items if item["threat_intel_hits"])
+    summary["threat_intel_checked"] = sum(1 for item in items if item["threat_intel"])
     return items, summary

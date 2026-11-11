@@ -11,6 +11,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+# Private AbuseIPDB / OTX API keys (template: threat_intel_keys.example.toml)
+threat_intel_keys.toml
 instance/
 *.sqlite
 *.sqlite-*

@@ -120,7 +120,7 @@ Choose a website, then open **Bot traffic** to review its IPs against the CSS po
 
 | Category | Policy | Action |
 | --- | --- | --- |
-| Confirmed bot | An unexpected WordPress entry-point request or any IP-attributed risk alert, excluding false positives | Review for blocking |
+| Confirmed bot | An unexpected WordPress entry-point request, any IP-attributed risk alert (excluding false positives), or an AbuseIPDB score ≥ 70 / OTX reputation ≥ 1 | Review for blocking |
 | Suspected bot | Insufficient normal browsing evidence and no qualifying probe or risk alert | Monitor or challenge |
 | Not a bot | Successful CSS request, with no qualifying probe or risk alert | Allow and monitor |
 
@@ -135,6 +135,13 @@ A single `/wp-admin/install.php?step=1` request confirms a bot even with a 404
 response, CSS activity, or language headers. This applies to existing evidence
 without a reimport or detection rescan. Explicit false-positive decisions on linked
 WordPress alerts still exclude those requests.
+
+To confirm more bots with threat intelligence, add AbuseIPDB and AlienVault OTX
+keys to `threat_intel_keys.toml` (ignored by git; template in
+`threat_intel_keys.example.toml`), then select **Check IP reputation** or run
+`flask --app app threat-intel`. Keys rotate automatically when one hits its
+rate limit. AbuseIPDB abuse confidence ≥ 70 or OTX reputation = 1 confirms a bot.
+See [threat intelligence](docs/BOT_TRAFFIC.md#threat-intelligence-abuseipdb-and-alienvault-otx).
 
 Use **Review IP** for reasons and evidence links. All classifications, including
 suspected bots with no alerts, show a paginated request history with raw-record

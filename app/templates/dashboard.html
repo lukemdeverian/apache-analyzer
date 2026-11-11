@@ -110,9 +110,9 @@
     </section>
 
     <section id="view-bots" data-section="bots" aria-label="Bot traffic" hidden>
-      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. An unexpected WordPress entry-point request confirms a bot, including a 404 response. WordPress probes and IP-attributed risk alerts take priority; false positives are excluded. Labels are rule-based; review source-IP attribution before applying a block.</p>
+      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. An unexpected WordPress entry-point request confirms a bot, including a 404 response. An AbuseIPDB abuse confidence score of 70 or more, or an AlienVault OTX listing in a threat pulse, also confirms a bot (select Check IP reputation). WordPress probes, reputation hits, and IP-attributed risk alerts take priority; false positives are excluded. Labels are rule-based; review source-IP attribution before applying a block.</p>
       <div class="stat-grid bot-stats">
-        <article class="stat"><p>Confirmed bot</p><strong id="bot-confirmed">—</strong><span>Review for blocking</span></article>
+        <article class="stat"><p>Confirmed bot</p><strong id="bot-confirmed">—</strong><span id="bot-confirmed-detail">Review for blocking</span></article>
         <article class="stat"><p>Suspected bot</p><strong id="bot-suspected">—</strong><span>Monitor or challenge</span></article>
         <article class="stat"><p>Not a bot</p><strong id="bot-normal">—</strong><span>Allow and monitor</span></article>
       </div>
@@ -120,7 +120,9 @@
         <label>Classification<select name="classification"><option value="">All classifications</option><option value="confirmed_bot">Confirmed bot</option><option value="suspected_bot">Suspected bot</option><option value="not_a_bot">Not a bot</option></select></label>
         <button class="button secondary" type="submit">Apply</button>
         <button id="export-bots" class="button secondary" type="button">Export ban candidates</button>
+        <button id="check-reputation" class="button secondary" type="button">Check IP reputation</button>
       </form>
+      <div id="reputation-message" class="notice pending" role="status" hidden></div>
       <article class="panel"><div class="table-scroll"><table><caption class="sr-only">IP bot assessments</caption>
         <thead><tr><th scope="col">IP address</th><th scope="col">Classification</th><th scope="col">Recommendation</th><th scope="col">Requests</th><th scope="col">Last seen (UTC)</th><th scope="col">Details</th></tr></thead>
         <tbody id="bot-rows"></tbody>
@@ -197,6 +199,7 @@
     <h3>Linked risk alerts</h3><div id="bot-risk-evidence" class="bot-evidence"></div>
     <h3>WordPress probe evidence</h3><div id="bot-wordpress-evidence" class="bot-evidence"></div>
     <h3>CSS evidence</h3><div id="bot-browsing-evidence" class="bot-evidence"></div>
+    <h3>Threat intelligence</h3><div id="bot-threat-intel" class="bot-evidence"></div>
     <p class="footnote">CSS requests suggest normal browsing; HTML and language are context only. The log cannot prove a visitor is human. Missing CSS alone is not grounds for a ban. IPs may represent multiple visitors.</p>
   </dialog>
 

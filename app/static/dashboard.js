@@ -56,6 +56,7 @@
     else url.searchParams.set("domain_id", domainId);
     if (url.hash.startsWith("#alerts/")) url.hash = "#alerts";
     history.replaceState(null, "", url);
+    message("reputation-message", "");
     $("bot-site").textContent = $("active-domain").selectedOptions[0].dataset.hostname;
     $("domain-caption").textContent = "Events, alerts, assessments, and exports are scoped to this website.";
   }
@@ -206,6 +207,7 @@
       ["Observed languages", item.languages.join(", ") || "Not observed"],
       ["Risk alerts", item.risk_alert_count],
       ["WordPress probes", item.wordpress_probe_count],
+      ["Threat intelligence hits", item.threat_intel_hits],
     ]);
     $("bot-reasons").replaceChildren(...item.reasons.map((reason) => element("li", reason)));
     $("bot-wordpress-evidence").replaceChildren(...(item.wordpress_probe_evidence.length
@@ -232,6 +234,13 @@
         button.addEventListener("click", () => openEvent(proof.event_id));
         return button;
       }) : [element("p", "No successful CSS requests in this selection.", "muted")]));
+    $("bot-threat-intel").replaceChildren(...(item.threat_intel.length
+      ? item.threat_intel.map((result) => element("p",
+        result.label + ": " + (result.provider === "abuseipdb" ? "abuse confidence " + result.score + "/100"
+          : "reputation " + result.score) + " · threshold " + result.threshold + " · " +
+        (result.malicious ? "malicious" : "clean") + " · checked " + time(result.checked_at),
+        result.malicious ? null : "muted"))
+      : [element("p", "Not checked yet. Select Check IP reputation on the Bot traffic page.", "muted")]));
     if (!$("bot-dialog").open) $("bot-dialog").showModal();
     loadBotRequests();
   }
@@ -271,6 +280,9 @@
     $("bot-confirmed").textContent = summary.by_classification.confirmed_bot.toLocaleString();
     $("bot-suspected").textContent = summary.by_classification.suspected_bot.toLocaleString();
     $("bot-normal").textContent = summary.by_classification.not_a_bot.toLocaleString();
+    $("bot-confirmed-detail").textContent = summary.threat_intel_confirmed
+      ? "Review for blocking · " + summary.threat_intel_confirmed.toLocaleString() + " flagged by threat intel"
+      : "Review for blocking";
     $("bot-scope").textContent = summary.total + " IPs assessed. " + summary.unattributed_requests +
       " access requests lack a usable IP. Counts cover the shared IP/date filters.";
     $("export-bots").disabled = summary.ban_candidates === 0;
@@ -782,6 +794,39 @@
       message("page-message", error.message);
     } finally {
       $("export-bots").disabled = $("bot-confirmed").textContent === "0";
+    }
+  });
+
+  let reputationRunning = false;
+  $("check-reputation").addEventListener("click", async () => {
+    if (reputationRunning) return;
+    reputationRunning = true;
+    $("check-reputation").disabled = true;
+    const domainId = state.domain_id, filters = { ...state.common };
+    let looked = 0, result;
+    message("reputation-message", "Checking IPs against AbuseIPDB and AlienVault OTX…", "pending");
+    try {
+      // Each request handles one bounded batch; keep going while work and keys remain.
+      do {
+        result = await api("bots/threat-intel?" + query(filters), {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+        });
+        if (state.domain_id !== domainId) return;
+        looked += result.processed;
+        message("reputation-message", "Looked up " + looked + " IPs · " + result.remaining + " remaining…", "pending");
+        await refresh();
+      } while (result.can_continue && result.processed > 0);
+      const stopped = Object.values(result.providers).filter((provider) => provider.stopped && provider.stopped !== "no_keys")
+        .map((provider) => provider.label + " stopped (" + provider.stopped.replaceAll("_", " ") + ")");
+      const errors = Object.values(result.errors).reduce((total, count) => total + count, 0);
+      message("reputation-message", "Reputation check finished: " + looked + " IPs looked up, " +
+        result.remaining + " remaining." + (errors ? " " + errors + " lookups failed and will be retried next time." : "") +
+        (stopped.length ? " " + stopped.join("; ") + "." : ""), result.remaining || errors ? "pending" : "");
+    } catch (error) {
+      message("reputation-message", error.message);
+    } finally {
+      reputationRunning = false;
+      $("check-reputation").disabled = false;
     }
   });
 

@@ -19,7 +19,7 @@ Rules are evaluated in this order:
 
 | Category | Evidence | Recommendation |
 | --- | --- | --- |
-| Confirmed bot | An unexpected WordPress entry-point request or any risk alert attributed to this IP and linked to access evidence in the selected history | Review for blocking |
+| Confirmed bot | An unexpected WordPress entry-point request, any risk alert attributed to this IP and linked to access evidence in the selected history, or a cached threat-intelligence hit (AbuseIPDB score ≥ 70 or an OTX listing in ≥ 1 pulse) | Review for blocking |
 | Not a bot | No qualifying probe or risk alert, plus a successful CSS request | Allow and monitor |
 | Suspected bot | Neither of the above; insufficient normal browsing evidence | Monitor or challenge |
 
@@ -76,6 +76,44 @@ recommendations for review and never changes the website or firewall.
 [Accept-Language](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Accept-Language)
 expresses client language preferences. It does not verify identity. Logs also
 cannot show whether the browser rendered HTML/CSS or executed JavaScript.
+
+## Threat intelligence (AbuseIPDB and AlienVault OTX)
+
+Reputation lookups can move IPs out of **Suspected bot** or **Not a bot** into
+**Confirmed bot**. An IP is confirmed when either provider reports it:
+
+| Provider | Value used | Confirms a bot when |
+| --- | --- | --- |
+| AbuseIPDB | `data.abuseConfidenceScore` from `/api/v2/check` (last 90 days) | Score is 70 or higher |
+| AlienVault OTX | `reputation` from `/api/v1/indicators/IPv4/{ip}/general` (or `IPv6`) | Reputation is 1 (malicious) |
+
+Thresholds live in `THRESHOLDS` in `app/threat_intel.py`. Raw scores are cached,
+so a changed threshold applies without re-querying. The OTX reputation field is
+binary (0 = clean, 1 = malicious), so the threshold of 1 means any malicious report.
+
+**Keys.** Copy `threat_intel_keys.example.toml` to `threat_intel_keys.toml`
+(already present and ignored by git) and list keys under `[abuseipdb]` and
+`[otx]`. Keys are tried in order. A key that returns HTTP 429 (rate or session
+limit) is skipped until its `Retry-After` time (default one hour), and a key
+that returns 401/403 is skipped for an hour; the next key is used and the run
+continues. When every key for one provider is used up, the other provider keeps
+going. Three consecutive network or server errors pause that provider for the
+run; failed lookups are retried next time.
+
+**Running lookups.** Lookups never happen while viewing assessments. Select
+**Check IP reputation** on the Bot traffic page, which checks the selected
+website's IPs in batches of 20 until done or out of keys, or run:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app threat-intel            # both websites
+.\.venv\Scripts\python.exe -m flask --app app threat-intel --domain la_jolla_seals --limit 100 --json
+```
+
+Only public (globally routable) IPs that are not already confirmed by local
+evidence are sent. Results are cached in `instance/threat_intel.sqlite3`, shared
+by both websites, and reused for 7 days (`--refresh` or `?refresh=true`
+re-checks). Reputation is third-party opinion: shared cloud, VPN, and proxy
+addresses can be listed because of other users. Review before blocking.
 
 ## Apache logging
 
@@ -154,6 +192,15 @@ using the selected `domain_id`, the IP's `source_ip`, `log_type=access`, shared
 the text attachment. No confirmed IPs produces an empty file. Both endpoints
 are read only, use a consistent database snapshot, and require initialization.
 They scan matching history; memory grows with IP count rather than request count.
+
+`POST /api/bots/threat-intel` accepts the same filters plus `refresh=true` and
+requires an empty JSON body (`{}` with `Content-Type: application/json`), so
+other websites cannot trigger lookups. It checks one batch and returns
+`processed`, `remaining`, `can_continue`, per-provider `checked`/`errors`, and
+key status (`keys_rate_limited`, `keys_rejected`, `stopped`). It returns 409
+`threat_intel_not_configured` when no keys are set. Bot items include
+`threat_intel` (cached results with score, threshold, and `malicious`) and
+`threat_intel_hits`; the summary adds `threat_intel_confirmed` and `threat_intel_checked`.
 
 ```powershell
 Invoke-RestMethod 'http://127.0.0.1:5000/api/bots?classification=confirmed_bot&limit=25'
