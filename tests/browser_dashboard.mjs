@@ -590,6 +590,30 @@ try {
   await click("#bot-dialog [data-close]");
   assert.deepEqual(exceptions, [], "Unexpected browser errors in User-Agent evidence.");
   console.log("PASS declared AI crawler confirmed over CSS, with User-Agent evidence link and raw record");
+  const bingIp = "157.55.39.10";
+  await importLog(bingIp + ' - - [24/Sep/2026:09:40:00 +0000] "GET /wp-login.php HTTP/1.1" 404 100 "-" ' +
+    '"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)"\n',
+    "access", "UTC", "verified-crawler.log");
+  await click("#import-dialog [data-close]");
+  await field('#common-filters [name="source_ip"]', bingIp);
+  await submit("#common-filters");
+  await waitFor("document.getElementById('bot-verified').textContent === '1'", "verified crawler card");
+  assert.equal(await evaluate("document.getElementById('bot-confirmed').textContent"), "0");
+  assert.equal(await evaluate("document.getElementById('export-bots').disabled"), true);
+  assert.match(await evaluate("document.querySelector('#bot-rows .badge').textContent"), /Verified crawler/);
+  await click("#bot-rows .row-link");
+  assert.match(await evaluate("document.getElementById('bot-title').textContent"), /Verified crawler/);
+  assert.match(await evaluate("document.getElementById('bot-reasons').textContent"), /157\.55\.39\.0\/24, which Microsoft publishes for bingbot/);
+  assert.equal(await evaluate("document.querySelector('#bot-crawler-evidence a').href"), "https://www.bing.com/toolbox/bingbot.json");
+  await click("#bot-crawler-evidence button");
+  await waitFor("document.getElementById('raw-log').textContent.includes('bingbot/2.0')", "crawler claim raw evidence");
+  await click("#event-dialog [data-close]");
+  await click("#bot-dialog [data-close]");
+  await field('#common-filters [name="source_ip"]', crawlerIp);
+  await submit("#common-filters");
+  await waitFor("document.getElementById('bot-confirmed-detail').textContent.includes('1 impersonating crawlers')", "impersonation count");
+  assert.deepEqual(exceptions, [], "Unexpected browser errors in crawler verification.");
+  console.log("PASS published IP range verifies bingbot despite a WordPress probe; off-range GPTBot counted as impersonation");
   console.log("All browser checks passed.");
 } catch (error) {
   console.error(error);

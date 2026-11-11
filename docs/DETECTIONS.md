@@ -102,6 +102,12 @@ carries no headers; it is excluded. Common-format logs do not record the
 User-Agent, so a missing header there is not flagged. CUBOT (an Android phone
 brand) is excluded from the crawler check.
 
+Before these checks apply, every IP is compared with the IP ranges that Google,
+Microsoft, OpenAI, Apple, Perplexity, and DuckDuckGo publish for their
+crawlers. An IP inside one is a **Verified crawler**. A User-Agent claiming one
+of those crawlers from any other IP is flagged as impersonation. See
+[Verified crawlers](BOT_TRAFFIC.md#verified-crawlers).
+
 ## Server-wide windows
 
 These rules combine records across clients and imported files in the same

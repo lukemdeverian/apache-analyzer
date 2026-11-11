@@ -120,7 +120,8 @@ Choose a website, then open **Bot traffic** to review its IPs against the CSS po
 
 | Category | Policy | Action |
 | --- | --- | --- |
-| Confirmed bot | An unexpected WordPress entry-point request, any IP-attributed risk alert (excluding false positives), or an AbuseIPDB score ≥ 70 / OTX reputation ≥ 1 | Review for blocking |
+| Verified crawler | IP inside a crawler operator's published ranges (Google, Microsoft, OpenAI, Apple, Perplexity, DuckDuckGo); never exported | Allow; limit with robots.txt |
+| Confirmed bot | An unexpected WordPress entry-point request, any IP-attributed risk alert (excluding false positives), an AbuseIPDB score ≥ 70 / OTX reputation 1, a User-Agent that declares automation, or one impersonating a verifiable crawler | Review for blocking |
 | Suspected bot | Insufficient normal browsing evidence and no qualifying probe or risk alert | Monitor or challenge |
 | Not a bot | Successful CSS request, with no qualifying probe or risk alert | Allow and monitor |
 

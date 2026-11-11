@@ -13,7 +13,7 @@ from flask import Blueprint, Flask, Response, current_app, g, request
 from werkzeug.exceptions import HTTPException, NotFound
 
 from app.alerts import ALERT_STATUSES, SEVERITIES
-from app.bots import CLASSIFICATIONS, assess_bots, policy as bot_policy
+from app.bots import CLASSIFICATIONS, REPUTATION_SETTLED, assess_bots, policy as bot_policy
 from app.database import domain_database_path, get_database, transaction
 from app.domains import DEFAULT_DOMAIN, DOMAINS, DOMAIN_IDS, get_domain
 from app.import_history import duplicate_line_page
@@ -364,10 +364,9 @@ def bot_threat_intel() -> dict[str, Any]:
         items, _ = assess_bots(
             store, **filters, hostname=get_domain(_request_domain()).hostname, reputation=reputation,
         )
-    # Already-confirmed IPs need no quota; reputation can only move IPs into Confirmed bot.
     addresses = [
         item["source_ip"] for item in items
-        if item["classification"] != "confirmed_bot" and eligible_ip(item["source_ip"])
+        if item["classification"] not in REPUTATION_SETTLED and eligible_ip(item["source_ip"])
     ]
     fetch = current_app.config.get("THREAT_INTEL_FETCH")
     options = {"fetch": fetch} if fetch is not None else {}

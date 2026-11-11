@@ -110,14 +110,15 @@
     </section>
 
     <section id="view-bots" data-section="bots" aria-label="Bot traffic" hidden>
-      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. An unexpected WordPress entry-point request confirms a bot, including a 404 response. An AbuseIPDB abuse confidence score of 70 or more, or an AlienVault OTX reputation of 1 (malicious), also confirms a bot (select Check IP reputation). So does a User-Agent that declares a crawler, AI agent, scanner, or HTTP library, or a request with no User-Agent. WordPress probes, reputation hits, declared User-Agents, and IP-attributed risk alerts take priority; false positives are excluded. Labels are rule-based; review source-IP attribution before applying a block.</p>
+      <p class="footnote">For <span id="bot-site">chronoscrate.xyz</span> logs. Successful CSS requests suggest normal browsing; HTML, page visits, and language preferences are neutral. An unexpected WordPress entry-point request confirms a bot, including a 404 response. An AbuseIPDB abuse confidence score of 70 or more, or an AlienVault OTX reputation of 1 (malicious), also confirms a bot (select Check IP reputation). So does a User-Agent that declares a crawler, AI agent, scanner, or HTTP library, or a request with no User-Agent. WordPress probes, reputation hits, declared User-Agents, and IP-attributed risk alerts take priority; false positives are excluded. An IP inside the ranges that Google, Microsoft, OpenAI, Apple, Perplexity, or DuckDuckGo publish for their crawlers is a verified crawler and is never exported; a User-Agent claiming one of those crawlers from another IP is impersonation and confirms a bot. Labels are rule-based; review source-IP attribution before applying a block.</p>
       <div class="stat-grid bot-stats">
         <article class="stat"><p>Confirmed bot</p><strong id="bot-confirmed">—</strong><span id="bot-confirmed-detail">Review for blocking</span></article>
         <article class="stat"><p>Suspected bot</p><strong id="bot-suspected">—</strong><span>Monitor or challenge</span></article>
+        <article class="stat"><p>Verified crawler</p><strong id="bot-verified">—</strong><span>Published IP ranges · not exported</span></article>
         <article class="stat"><p>Not a bot</p><strong id="bot-normal">—</strong><span>Allow and monitor</span></article>
       </div>
       <form id="bot-filters" class="sub-filters">
-        <label>Classification<select name="classification"><option value="">All classifications</option><option value="confirmed_bot">Confirmed bot</option><option value="suspected_bot">Suspected bot</option><option value="not_a_bot">Not a bot</option></select></label>
+        <label>Classification<select name="classification"><option value="">All classifications</option><option value="confirmed_bot">Confirmed bot</option><option value="suspected_bot">Suspected bot</option><option value="verified_crawler">Verified crawler</option><option value="not_a_bot">Not a bot</option></select></label>
         <button class="button secondary" type="submit">Apply</button>
         <button id="export-bots" class="button secondary" type="button">Export ban candidates</button>
         <button id="check-reputation" class="button secondary" type="button">Check IP reputation</button>
@@ -137,7 +138,7 @@
         <thead><tr><th scope="col">Website / provider</th><th scope="col">Access requests</th><th scope="col">Alerts</th><th scope="col">Alerts / 1,000 requests</th><th scope="col">IP categories</th><th scope="col">Confirmed bot IPs (%)</th></tr></thead>
         <tbody id="comparison-rows"></tbody>
       </table></div></article>
-      <p class="footnote">IP categories: confirmed / suspected / normal. Percentages use assessed IPs, not requests. “—” means no denominator. Alert counts use first-seen times and include server-wide issues; bot categories use linked evidence in the selected range.</p>
+      <p class="footnote">IP categories: confirmed / suspected / verified crawler / normal. Percentages use assessed IPs, not requests. “—” means no denominator. Alert counts use first-seen times and include server-wide issues; bot categories use linked evidence in the selected range.</p>
     </section>
 
     <section id="view-rules" data-section="rules" aria-label="Detection rules" hidden>
@@ -198,6 +199,7 @@
     </section>
     <h3>Linked risk alerts</h3><div id="bot-risk-evidence" class="bot-evidence"></div>
     <h3>WordPress probe evidence</h3><div id="bot-wordpress-evidence" class="bot-evidence"></div>
+    <h3>Crawler verification</h3><div id="bot-crawler-evidence" class="bot-evidence"></div>
     <h3>User-Agent evidence</h3><div id="bot-user-agent-evidence" class="bot-evidence"></div>
     <h3>CSS evidence</h3><div id="bot-browsing-evidence" class="bot-evidence"></div>
     <h3>Threat intelligence</h3><div id="bot-threat-intel" class="bot-evidence"></div>

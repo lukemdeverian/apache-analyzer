@@ -6,9 +6,12 @@
   const statusLabels = {
     new: "New", investigating: "Investigating", resolved: "Resolved", false_positive: "False positive",
   };
-  const botLabels = { confirmed_bot: "Confirmed bot", suspected_bot: "Suspected bot", not_a_bot: "Not a bot" };
+  const botLabels = {
+    confirmed_bot: "Confirmed bot", suspected_bot: "Suspected bot", verified_crawler: "Verified crawler", not_a_bot: "Not a bot",
+  };
   const recommendations = {
     review_for_block: "Review for blocking", monitor_or_challenge: "Monitor or challenge", allow_and_monitor: "Allow and monitor",
+    allow_or_use_robots_txt: "Allow; limit with robots.txt",
   };
   const titles = {
     overview: ["Overview", "Import your logs. Follow the evidence."],
@@ -209,7 +212,32 @@
       ["WordPress probes", item.wordpress_probe_count],
       ["Threat intelligence hits", item.threat_intel_hits],
       ["Requests with an automated User-Agent", item.declared_agent_count],
+      ["Published crawler range", item.verified_crawler
+        ? item.verified_crawler.operator + " " + item.verified_crawler.crawler + " · " + item.verified_crawler.prefix
+        : "Not in any published range"],
     ]);
+    const crawlerEvidence = [];
+    if (item.verified_crawler) {
+      const link = element("a", item.verified_crawler.operator + " publishes " + item.verified_crawler.prefix +
+        " for " + item.verified_crawler.crawler + " (list dated " +
+        (item.verified_crawler.creation_time || "unknown").slice(0, 10) + ")");
+      link.href = item.verified_crawler.source_url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const line = element("p");
+      line.append(link);
+      crawlerEvidence.push(line);
+    }
+    for (const claim of item.crawler_claims) {
+      const button = element("button", (claim.impersonation ? "Impersonation: claims " : "Claims ") + claim.token +
+        " (" + claim.operator + ") · " + claim.requests + " request(s) · Event #" + claim.event_id, "text-button");
+      button.type = "button";
+      button.title = claim.user_agent;
+      button.addEventListener("click", () => openEvent(claim.event_id));
+      crawlerEvidence.push(button);
+    }
+    $("bot-crawler-evidence").replaceChildren(...(crawlerEvidence.length ? crawlerEvidence
+      : [element("p", "Not in a published crawler range, and no User-Agent claims a verifiable crawler.", "muted")]));
     $("bot-user-agent-evidence").replaceChildren(...(item.declared_agents.length
       ? item.declared_agents.map((agent) => {
         const button = element("button", agent.label + ": " + agent.name + " · " + agent.requests +
@@ -289,9 +317,11 @@
   function botRows(items, summary) {
     $("bot-confirmed").textContent = summary.by_classification.confirmed_bot.toLocaleString();
     $("bot-suspected").textContent = summary.by_classification.suspected_bot.toLocaleString();
+    $("bot-verified").textContent = summary.by_classification.verified_crawler.toLocaleString();
     $("bot-normal").textContent = summary.by_classification.not_a_bot.toLocaleString();
     const flagged = [];
     if (summary.declared_agent_confirmed) flagged.push(summary.declared_agent_confirmed.toLocaleString() + " by User-Agent");
+    if (summary.impersonation_confirmed) flagged.push(summary.impersonation_confirmed.toLocaleString() + " impersonating crawlers");
     if (summary.threat_intel_confirmed) flagged.push(summary.threat_intel_confirmed.toLocaleString() + " by threat intel");
     $("bot-confirmed-detail").textContent = "Review for blocking" + (flagged.length ? " · " + flagged.join(", ") : "");
     $("bot-scope").textContent = summary.total + " IPs assessed. " + summary.unattributed_requests +
@@ -435,7 +465,8 @@
           row.append(site, element("td", item.access_requests.toLocaleString()),
             element("td", item.alerts.total.toLocaleString()),
             element("td", item.alerts_per_1000_requests ?? "—"),
-            element("td", [categories.confirmed_bot, categories.suspected_bot, categories.not_a_bot].join(" / ")),
+            element("td", [categories.confirmed_bot, categories.suspected_bot, categories.verified_crawler,
+              categories.not_a_bot].join(" / ")),
             element("td", item.confirmed_bot_ip_percent ?? "—"));
           return row;
         }));
@@ -464,7 +495,7 @@
     } else {
       $(view === "alerts" ? "alert-pagination" : view === "bots" ? "bot-pagination" : "event-pagination").replaceChildren();
       if (view === "bots") {
-        for (const id of ["bot-confirmed", "bot-suspected", "bot-normal"]) $(id).textContent = "—";
+        for (const id of ["bot-confirmed", "bot-suspected", "bot-verified", "bot-normal"]) $(id).textContent = "—";
         $("export-bots").disabled = true;
         $("bot-scope").textContent = "Loading assessments…";
       }

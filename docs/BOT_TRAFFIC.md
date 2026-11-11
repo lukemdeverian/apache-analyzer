@@ -19,7 +19,8 @@ Rules are evaluated in this order:
 
 | Category | Evidence | Recommendation |
 | --- | --- | --- |
-| Confirmed bot | An unexpected WordPress entry-point request, any risk alert attributed to this IP and linked to access evidence in the selected history, a cached threat-intelligence hit (AbuseIPDB score ≥ 70 or OTX reputation 1), or a [User-Agent that declares automation](#user-agent-evidence) | Review for blocking |
+| Verified crawler | The IP is inside the [IP ranges a crawler operator publishes](#verified-crawlers) (Google, Microsoft, OpenAI, Apple, Perplexity, DuckDuckGo). Takes priority over every other row and is never exported | Allow; limit with robots.txt |
+| Confirmed bot | An unexpected WordPress entry-point request, any risk alert attributed to this IP and linked to access evidence in the selected history, a cached threat-intelligence hit (AbuseIPDB score ≥ 70 or OTX reputation 1), a [User-Agent that declares automation](#user-agent-evidence), or a User-Agent that [impersonates a verifiable crawler](#verified-crawlers) | Review for blocking |
 | Not a bot | No qualifying probe or risk alert, plus a successful CSS request | Allow and monitor |
 | Suspected bot | Neither of the above; insufficient normal browsing evidence | Monitor or challenge |
 
@@ -146,11 +147,58 @@ The bot details list each distinct agent (up to ten) with its request count and
 a link to the first matching record; hover the link to see the full header.
 
 **Limits.** A browser-like User-Agent proves nothing; scrapers copy real Chrome
-strings, and those IPs stay in Suspected unless other evidence applies. Search
-engines that declare themselves (Googlebot, bingbot) are also confirmed and
-exported. Check them against the operator's published IP ranges before
-blocking. Legitimate crawlers can be impersonated, and a genuine crawler may
-be one you want to allow.
+strings, and those IPs stay in Suspected unless other evidence applies.
+Self-declared crawlers whose operators publish IP ranges are checked against
+them (see [Verified crawlers](#verified-crawlers)). Others, such as `360Spider`
+or `AhrefsBot`, are confirmed and exported on their User-Agent alone; a
+genuine crawler may be one you want to allow.
+
+## Verified crawlers
+
+A User-Agent can be copied by anyone, but a completed HTTP request cannot come
+from an IP address the client does not control. These operators publish the
+addresses their crawlers use, so the analyzer checks every IP against them:
+
+| Operator | Published lists | User-Agent tokens checked for impersonation |
+| --- | --- | --- |
+| Google | [common crawlers](https://developers.google.com/static/crawling/ipranges/common-crawlers.json), [special crawlers](https://developers.google.com/static/crawling/ipranges/special-crawlers.json), [user-triggered fetchers](https://developers.google.com/static/crawling/ipranges/user-triggered-fetchers.json), [Google-owned user-triggered fetchers](https://developers.google.com/static/crawling/ipranges/user-triggered-fetchers-google.json) | `Googlebot` (and `-Image`, `-News`, `-Video`), `GoogleOther`, `Google-InspectionTool`, `Storebot-Google`, `AdsBot-Google`, `Mediapartners-Google`, `APIs-Google`, `FeedFetcher-Google`, and others |
+| Microsoft | [bingbot](https://www.bing.com/toolbox/bingbot.json) | `bingbot`, `msnbot`, `BingPreview`, `adidxbot` |
+| OpenAI | [GPTBot](https://openai.com/gptbot.json), [OAI-SearchBot](https://openai.com/searchbot.json), [ChatGPT-User](https://openai.com/chatgpt-user.json) | `GPTBot`, `OAI-SearchBot`, `ChatGPT-User` |
+| Apple | [Applebot](https://search.developer.apple.com/applebot.json) | `Applebot` |
+| Perplexity | [PerplexityBot](https://www.perplexity.ai/perplexitybot.json), [Perplexity-User](https://www.perplexity.ai/perplexity-user.json) | `PerplexityBot`, `Perplexity-User` |
+| DuckDuckGo | [DuckDuckBot](https://duckduckgo.com/duckduckbot.json) | `DuckDuckBot`, `DuckAssistBot` |
+
+- **Inside a published range → Verified crawler.** This holds whatever the
+  User-Agent says, since some fetchers (for example Google's user-triggered
+  fetchers) send browser-like headers. It also takes priority over WordPress
+  probes, risk alerts, and reputation hits. Crawlers follow links to missing
+  pages, and blocking the IP would block the genuine crawler. Those signals
+  are still listed in the reasons. Use robots.txt to limit what it fetches.
+- **Claims one of those crawlers from any other IP → impersonation.** The
+  reasons say so, and the IP is Confirmed bot. A claim for one operator from
+  another operator's range (bingbot from a Google address) is impersonation
+  too, but the IP stays Verified crawler.
+- Verified crawlers are skipped by **Check IP reputation**, which saves quota.
+
+The bot details show the matching prefix with a link to the operator's list,
+and each crawler claim with a link to its first raw record.
+
+**Updating the ranges.** The lists are stored in `app/data/crawler_ranges.json`,
+so assessments never contact the network. Operators change their ranges, so
+refresh the file periodically:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app crawler-ranges
+```
+
+A source that fails to download keeps its previous prefixes. The next page load
+uses the new file; no restart or reimport is needed.
+
+**Limits.** A crawler that publishes no ranges (360Spider, AhrefsBot, Yandex,
+Baidu) cannot be verified this way. Google and Microsoft also document
+verification by reverse DNS, which this analyzer does not perform. Behind a
+proxy or CDN, the logged IP is the proxy's address, so verification only works
+when Apache logs the original client IP.
 
 The ai.robots.txt list is vendored in `app/data/ai_robots.json` under its MIT
 license (`app/data/ai_robots.LICENSE`). To update it, replace the file with
@@ -210,8 +258,8 @@ history. No reimport or schema change is needed for this view.
 ## APIs
 
 `GET /api/bots` accepts `domain_id`, `source_ip`, `start`, `end`, `classification`, `limit`,
-`offset`, and `order`. Categories are `confirmed_bot`, `suspected_bot`, and
-`not_a_bot`. Validation and UTC formats match other investigation endpoints.
+`offset`, and `order`. Categories are `confirmed_bot`, `suspected_bot`,
+`verified_crawler`, and `not_a_bot`. Validation and UTC formats match other investigation endpoints.
 Categories appear in risk-priority order; `order=desc` (default) or `asc` sorts
 last-seen times within each category.
 
@@ -245,6 +293,12 @@ key status (`keys_rate_limited`, `keys_rejected`, `stopped`). It returns 409
 Items also include `declared_agent_count` and `declared_agents` (category,
 label, name, reason, raw `user_agent`, first `event_id`, and `requests`); the
 summary adds `declared_agent_confirmed`, and `policy` adds `user_agent_policy`.
+Items also include `verified_crawler` (operator, crawler, prefix, `source_url`,
+and the list's `creation_time`, or null), `crawler_claims` (operator, token, raw
+`user_agent`, first `event_id`, `requests`, `verifiable`, and `impersonation`),
+and `impersonation`. The summary adds `impersonation_confirmed` and
+`crawler_ranges_updated`, and `policy` adds `crawler_policy`. Verified crawlers
+use the recommendation `allow_or_use_robots_txt`.
 
 ```powershell
 Invoke-RestMethod 'http://127.0.0.1:5000/api/bots?classification=confirmed_bot&limit=25'
