@@ -204,6 +204,25 @@ The ai.robots.txt list is vendored in `app/data/ai_robots.json` under its MIT
 license (`app/data/ai_robots.LICENSE`). To update it, replace the file with
 the upstream `robots.json`; no reimport is needed.
 
+## Open-proxy probes
+
+A browser asks an origin server for a path, such as `GET /page HTTP/1.1`. The
+absolute form, `GET https://other-host/ HTTP/1.1`, is only meant for a forward
+proxy. When this server, which is not a proxy, receives an absolute URL for a
+host that is not the selected site, the client is testing it as an open relay.
+
+- **Absolute URL for another host → Confirmed bot.** This applies to any method
+  and any response status; one request is enough. The reasons name the other
+  host. It overrides CSS evidence, like the other confirming signals. A request
+  for the site's own host in absolute form is allowed and is not flagged.
+- The comparison between the request's host and the selected site is why the
+  check is per domain: an absolute URL for one site's host is a probe when it
+  arrives in the other site's logs.
+
+This is a precise signal with few false positives, but it is also rare, so most
+log sets contain none. It added no confirmed bots on the current Chronoscrate
+data; it is there to catch the probes when they appear.
+
 ## Apache logging
 
 Standard common/combined logs already support CSS path detection; no extra
@@ -299,6 +318,9 @@ and the list's `creation_time`, or null), `crawler_claims` (operator, token, raw
 and `impersonation`. The summary adds `impersonation_confirmed` and
 `crawler_ranges_updated`, and `policy` adds `crawler_policy`. Verified crawlers
 use the recommendation `allow_or_use_robots_txt`.
+Items also include `foreign_host_count` and `foreign_hosts` (each with `host`,
+first `event_id`, and `requests`); the summary adds `foreign_host_confirmed`,
+and `policy` adds `foreign_host_policy`.
 
 ```powershell
 Invoke-RestMethod 'http://127.0.0.1:5000/api/bots?classification=confirmed_bot&limit=25'

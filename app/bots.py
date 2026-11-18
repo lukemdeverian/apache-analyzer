@@ -60,6 +60,10 @@ def policy(hostname: str = SITE_HOST) -> dict:
             "Perplexity, DuckDuckGo) is a verified crawler and is never exported, whatever else it did. "
             "A User-Agent claiming one of those crawlers from any other IP is impersonation and confirms a bot."
         ),
+        "foreign_host_policy": (
+            "An absolute-URL request for a different host is an open-proxy probe and confirms a bot; "
+            "an origin server receives only the path from real browsers."
+        ),
         "interpretation": "Rule-based labels describe observed history; they do not prove automation or humanity.",
         "scope": "Import this site's logs. Standard Apache layouts do not include the requested host.",
         "sample_limit": SAMPLE_LIMIT,
@@ -98,6 +102,23 @@ def _site_path(target: str | None, path: str | None, hostname: str) -> str | Non
     return path
 
 
+def _foreign_host(target: str | None, hostname: str) -> str | None:
+    """The host of an absolute-form request target that names a different site.
+    An origin server only receives absolute-form targets from clients probing it
+    as an open proxy; real browsers send origin-form ("/path") to this site."""
+    if not target or any(ord(char) < 33 or ord(char) == 127 for char in target):
+        return None
+    if not re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", target):
+        return None
+    try:
+        host = urlsplit(target).hostname
+    except ValueError:
+        return None
+    if host is None or host == hostname.casefold():
+        return None
+    return host
+
+
 def _dismissed_wordpress_probe(store: SQLiteStore, event_id: int, source_ip: str) -> bool:
     cursor = store.connection.execute(
         "SELECT 1 FROM alert_events ae JOIN alerts a ON a.id = ae.alert_id "
@@ -134,6 +155,15 @@ class _Profile:
     declared_agents: dict[tuple[str, str], dict] = field(default_factory=dict)
     verified_crawler: dict | None = None
     crawler_claims: dict[tuple[str, str], dict] = field(default_factory=dict)
+    foreign_host_count: int = 0
+    foreign_hosts: dict[str, dict] = field(default_factory=dict)
+
+    def add_foreign_host(self, host: str, event_id: int) -> None:
+        self.foreign_host_count += 1
+        if host in self.foreign_hosts:
+            self.foreign_hosts[host]["requests"] += 1
+        elif len(self.foreign_hosts) < SAMPLE_LIMIT:
+            self.foreign_hosts[host] = {"host": host, "event_id": event_id, "requests": 1}
 
     def add_crawler_claim(self, claim, verifiable: bool, user_agent: str, event_id: int) -> None:
         key = (claim.operator, claim.token.casefold())
@@ -164,7 +194,7 @@ class _Profile:
         impersonations = [claim for claim in self.crawler_claims.values() if claim["impersonation"]]
         risk = bool(
             self.risk_alert_count or self.wordpress_probe_count or intel_hits
-            or self.declared_agent_count or impersonations
+            or self.declared_agent_count or impersonations or self.foreign_host_count
         )
         if self.verified_crawler is not None:
             classification = "verified_crawler"
@@ -191,6 +221,12 @@ class _Profile:
                 f"{self.wordpress_probe_count} unexpected WordPress entry-point request(s) on a site without WordPress; "
                 "a single request confirms a bot, including HTTP 404 responses."
             )
+        if self.foreign_host_count:
+            hosts = ", ".join(sorted(self.foreign_hosts))
+            reasons.append(
+                f"{self.foreign_host_count} request(s) used an absolute URL for another host ({hosts}); "
+                "real browsers send only the path to this server, so this is an open-proxy probe."
+            )
         reasons.extend(describe_reputation(result) for result in intel_hits)
         for agent in self.declared_agents.values():
             reasons.append(agent["reason"] + f" ({agent['requests']} request(s))")
@@ -209,6 +245,8 @@ class _Profile:
             reasons.append("Threat intelligence takes priority over normal browsing signals.")
         elif self.declared_agent_count and normal:
             reasons.append("A declared automated User-Agent takes priority over normal browsing signals.")
+        elif self.foreign_host_count and normal:
+            reasons.append("An open-proxy probe takes priority over normal browsing signals.")
         if classification == "suspected_bot":
             reasons.append("No successful CSS request in the selected history.")
             reasons.append("HTML, page visits, and language preferences are neutral; review before considering a block.")
@@ -234,6 +272,8 @@ class _Profile:
             "verified_crawler": self.verified_crawler,
             "crawler_claims": list(self.crawler_claims.values()),
             "impersonation": bool(impersonations),
+            "foreign_host_count": self.foreign_host_count,
+            "foreign_hosts": list(self.foreign_hosts.values()),
         }
 
 
@@ -290,6 +330,8 @@ def assess_bots(
         for language in languages:
             if len(profile.languages) < SAMPLE_LIMIT:
                 profile.languages.add(language)
+        if (foreign := _foreign_host(event.request_target, hostname)) is not None:
+            profile.add_foreign_host(foreign, item.id)
         path = _site_path(event.request_target, event.path, hostname)
         success = event.status_code is not None and (200 <= event.status_code < 300 or event.status_code == 304)
         if event.method != "GET" or not success or path is None:
@@ -346,6 +388,9 @@ def assess_bots(
     )
     summary["impersonation_confirmed"] = sum(
         1 for item in items if item["impersonation"] and item["classification"] == "confirmed_bot"
+    )
+    summary["foreign_host_confirmed"] = sum(
+        1 for item in items if item["foreign_host_count"] and item["classification"] == "confirmed_bot"
     )
     summary["crawler_ranges_updated"] = crawlers.updated
     return items, summary

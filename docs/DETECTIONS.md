@@ -108,6 +108,11 @@ crawlers. An IP inside one is a **Verified crawler**. A User-Agent claiming one
 of those crawlers from any other IP is flagged as impersonation. See
 [Verified crawlers](BOT_TRAFFIC.md#verified-crawlers).
 
+A request whose target is an absolute URL for a host other than the selected
+site is an open-proxy probe and confirms a bot, on any method or status. A
+real browser sends only the path to this server. See
+[Open-proxy probes](BOT_TRAFFIC.md#open-proxy-probes).
+
 ## Server-wide windows
 
 These rules combine records across clients and imported files in the same

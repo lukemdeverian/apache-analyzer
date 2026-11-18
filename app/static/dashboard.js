@@ -210,6 +210,7 @@
       ["Observed languages", item.languages.join(", ") || "Not observed"],
       ["Risk alerts", item.risk_alert_count],
       ["WordPress probes", item.wordpress_probe_count],
+      ["Open-proxy probes", item.foreign_host_count],
       ["Threat intelligence hits", item.threat_intel_hits],
       ["Requests with an automated User-Agent", item.declared_agent_count],
       ["Published crawler range", item.verified_crawler
@@ -322,6 +323,7 @@
     const flagged = [];
     if (summary.declared_agent_confirmed) flagged.push(summary.declared_agent_confirmed.toLocaleString() + " by User-Agent");
     if (summary.impersonation_confirmed) flagged.push(summary.impersonation_confirmed.toLocaleString() + " impersonating crawlers");
+    if (summary.foreign_host_confirmed) flagged.push(summary.foreign_host_confirmed.toLocaleString() + " open-proxy probes");
     if (summary.threat_intel_confirmed) flagged.push(summary.threat_intel_confirmed.toLocaleString() + " by threat intel");
     $("bot-confirmed-detail").textContent = "Review for blocking" + (flagged.length ? " · " + flagged.join(", ") : "");
     $("bot-scope").textContent = summary.total + " IPs assessed. " + summary.unattributed_requests +

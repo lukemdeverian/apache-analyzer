@@ -55,13 +55,10 @@ def test_successful_known_page_is_neutral_without_css(workspace, target):
 @pytest.mark.parametrize("target,status,method", [
     ("/checkout/admin", 200, "GET"), ("/CHECKOUT", 200, "GET"), ("/checkout", 404, "GET"),
     ("/", 500, "GET"), ("/", 301, "GET"), ("/", 200, "POST"), ("/", 200, "HEAD"),
-    ("https://other.example/checkout", 200, "GET"), ("https://chronoscrate.xyz.attacker.example/", 200, "GET"),
     ("https://user@chronoscrate.xyz/", 200, "GET"), ("https://chronoscrate.xyz:99999/", 200, "GET"),
     ("/%63heckout", 200, "GET"), ("*", 200, "OPTIONS"),
     ("/theme.css", 404, "GET"), ("/theme.css", 500, "GET"), ("/theme.css", 301, "GET"),
     ("/theme.css", 200, "HEAD"), ("/theme.css", 200, "POST"),
-    ("https://other.example/theme.css", 200, "GET"),
-    ("https://chronoscrate.xyz.attacker.example/theme.css", 200, "GET"),
     ("https://user@chronoscrate.xyz/theme.css", 200, "GET"),
     ("https://chronoscrate.xyz:99999/theme.css", 200, "GET"),
     ("/search?asset=theme.css", 200, "GET"),
@@ -72,6 +69,37 @@ def test_other_targets_failed_or_non_get_requests_are_not_positive(workspace, ta
     result = assessment(store)
     assert result["classification"] == "suspected_bot"
     assert result["recommendation"] == "monitor_or_challenge"
+
+
+@pytest.mark.parametrize("target,status,method,extensions", [
+    ("https://other.example/checkout", 200, "GET", ""),
+    ("http://other.example/", 404, "GET", ""),
+    ("https://chronoscrate.xyz.attacker.example/", 200, "GET", ""),
+    ("https://other.example/theme.css", 200, "GET", ""),
+    ("http://169.254.169.254/latest/meta-data/", 200, "GET", ""),
+    ("https://other.example/x", 200, "POST", ""),
+    ("https://evil.example/style.css", 200, "GET", ' sfd:"style"'),
+])
+def test_absolute_url_for_another_host_is_an_open_proxy_probe(workspace, target, status, method, extensions):
+    _, store = workspace
+    identity = store.insert_event(event(target, status=status, method=method, extensions=extensions))
+    result = assessment(store)
+    assert result["classification"] == "confirmed_bot"
+    assert result["recommendation"] == "review_for_block"
+    assert result["foreign_host_count"] == 1
+    assert result["foreign_hosts"][0]["event_id"] == identity
+    assert any("open-proxy probe" in reason for reason in result["reasons"])
+
+
+@pytest.mark.parametrize("target", [
+    "/checkout", "//other.example/path", "https://chronoscrate.xyz/", "https://chronoscrate.xyz:443/",
+    "https://user@chronoscrate.xyz/", "https://CHRONOSCRATE.xyz/",
+])
+def test_same_host_or_relative_targets_are_not_proxy_probes(workspace, target):
+    _, store = workspace
+    store.insert_event(event(target))
+    result = assessment(store)
+    assert result["foreign_host_count"] == 0
 
 
 @pytest.mark.parametrize("target,extensions", [
