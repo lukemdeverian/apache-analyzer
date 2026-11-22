@@ -174,10 +174,16 @@ def test_absolute_css_targets_must_match_selected_domain(workspace, domain_id, h
     app, _ = workspace
     client = app.test_client()
     other_host = "protectlajollaseals.xyz" if domain_id == PRIMARY else "chronoscrate.xyz"
+    # An absolute CSS target for the sibling domain's host is a different site to
+    # this one: it is not credited as browsing and now reads as an open-proxy probe.
     assert upload(client, domain_id, access(f"https://{other_host}/theme.css")).status_code == 201
-    assert client.get(scoped("/api/bots", domain_id)).json["items"][0]["classification"] == "suspected_bot"
-    assert upload(client, domain_id, access(f"https://{hostname}/theme.css")).status_code == 201
-    assert client.get(scoped("/api/bots", domain_id)).json["items"][0]["classification"] == "not_a_bot"
+    probe = client.get(scoped("/api/bots", domain_id)).json["items"][0]
+    assert probe["classification"] == "confirmed_bot" and probe["foreign_host_count"] == 1
+    # The same CSS for the selected domain's own host is normal browsing.
+    other_ip = "198.51.100.7"
+    assert upload(client, domain_id, access(f"https://{hostname}/theme.css", ip=other_ip)).status_code == 201
+    items = {item["source_ip"]: item for item in client.get(scoped("/api/bots", domain_id)).json["items"]}
+    assert items[other_ip]["classification"] == "not_a_bot" and items[other_ip]["foreign_host_count"] == 0
 
 
 def test_comparison_has_counts_rates_and_supplied_provider_labels(workspace):

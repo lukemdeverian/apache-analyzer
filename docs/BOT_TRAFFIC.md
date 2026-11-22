@@ -19,7 +19,8 @@ Rules are evaluated in this order:
 
 | Category | Evidence | Recommendation |
 | --- | --- | --- |
-| Confirmed bot | An unexpected WordPress entry-point request or any risk alert attributed to this IP and linked to access evidence in the selected history | Review for blocking |
+| Verified crawler | The IP is inside the [IP ranges a crawler operator publishes](#verified-crawlers) (Google, Microsoft, OpenAI, Apple, Perplexity, DuckDuckGo). Takes priority over every other row and is never exported | Allow; limit with robots.txt |
+| Confirmed bot | An unexpected WordPress entry-point request, any risk alert attributed to this IP and linked to access evidence in the selected history, a cached threat-intelligence hit (AbuseIPDB score ≥ 70 or OTX reputation 1), a [User-Agent that declares automation](#user-agent-evidence), or a User-Agent that [impersonates a verifiable crawler](#verified-crawlers) | Review for blocking |
 | Not a bot | No qualifying probe or risk alert, plus a successful CSS request | Allow and monitor |
 | Suspected bot | Neither of the above; insufficient normal browsing evidence | Monitor or challenge |
 
@@ -77,6 +78,151 @@ recommendations for review and never changes the website or firewall.
 expresses client language preferences. It does not verify identity. Logs also
 cannot show whether the browser rendered HTML/CSS or executed JavaScript.
 
+## Threat intelligence (AbuseIPDB and AlienVault OTX)
+
+Reputation lookups can move IPs out of **Suspected bot** or **Not a bot** into
+**Confirmed bot**. An IP is confirmed when either provider reports it:
+
+| Provider | Value used | Confirms a bot when |
+| --- | --- | --- |
+| AbuseIPDB | `data.abuseConfidenceScore` from `/api/v2/check` (last 90 days) | Score is 70 or higher |
+| AlienVault OTX | `reputation` from `/api/v1/indicators/IPv4/{ip}/general` (or `IPv6`) | Reputation is 1 (malicious) |
+
+Thresholds live in `THRESHOLDS` in `app/threat_intel.py`. Raw scores are cached,
+so a changed threshold applies without re-querying. The OTX reputation field is
+binary (0 = clean, 1 = malicious), so the threshold of 1 means any malicious report.
+
+**Keys.** Copy `threat_intel_keys.example.toml` to `threat_intel_keys.toml`
+(already present and ignored by git) and list keys under `[abuseipdb]` and
+`[otx]`. Keys are tried in order. A key that returns HTTP 429 (rate or session
+limit) is skipped until its `Retry-After` time (default one hour), and a key
+that returns 401/403 is skipped for an hour; the next key is used and the run
+continues. When every key for one provider is used up, the other provider keeps
+going. Three consecutive network or server errors pause that provider for the
+run; failed lookups are retried next time.
+
+**Running lookups.** Lookups never happen while viewing assessments. Select
+**Check IP reputation** on the Bot traffic page, which checks the selected
+website's IPs in batches of 20 until done or out of keys, or run:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app threat-intel            # both websites
+.\.venv\Scripts\python.exe -m flask --app app threat-intel --domain la_jolla_seals --limit 100 --json
+```
+
+Only public (globally routable) IPs that are not already confirmed by local
+evidence are sent. Results are cached in `instance/threat_intel.sqlite3`, shared
+by both websites, and never expire (`--refresh` or `?refresh=true`
+re-checks). Reputation is third-party opinion: shared cloud, VPN, and proxy
+addresses can be listed because of other users. Review before blocking.
+
+## User-Agent evidence
+
+A client that announces itself as automated is a bot by its own account, so one
+such request confirms the IP and overrides CSS evidence. The rules come from
+[Cloudflare's bot score](https://developers.cloudflare.com/bots/concepts/bot-score/)
+(a missing User-Agent is scored as automated) and the log-only method in
+[Shy Guys (arXiv 2603.28546)](https://arxiv.org/abs/2603.28546). Checks run in
+this order, and the first match names the agent:
+
+| Category | Matches | Example |
+| --- | --- | --- |
+| Missing User-Agent | `"-"` or blank in a combined log, when a request line was received | `"POST / HTTP/1.1" 200 … "-" "-"` |
+| Security scanner | Known scanner and internet-survey names | `zgrab`, `CensysInspect`, `Palo Alto Networks` (Xpanse), `Infrawatch`, `sqlmap`, `Nuclei`, `Hello, World` |
+| AI crawler or agent | Tokens from the [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt) list, with the operator | `GPTBot (OpenAI)`, `ClaudeBot`, `Bytespider`, `CCBot`, `PerplexityBot` |
+| Automation tool or HTTP library | Leading tool tokens, headless browsers, or a bare `Mozilla/5.0` | `curl/8.4.0`, `python-requests`, `Go-http-client`, `HeadlessChrome` |
+| Self-declared crawler | Any word ending in `bot`, `crawler`, `spider`, `scraper`, `scanner`, or `Slurp` | `Googlebot`, `bingbot`, `AhrefsBot`, `360Spider` |
+
+Exclusions that prevent false positives:
+
+- Common-format logs never record the header, so absence there means nothing.
+- A `"-" 408` line is a spare browser connection that timed out before sending
+  anything; it has no headers to judge.
+- ai.robots.txt tokens that are ordinary words or desktop-app names (`Code`,
+  `Cursor`, `Dot`, `Operator`, `Muse`, and others in `_AMBIGUOUS_AI_TOKENS`)
+  are skipped because they appear in Electron app User-Agents.
+- `CUBOT` (an Android phone brand) is not treated as a crawler name.
+
+The bot details list each distinct agent (up to ten) with its request count and
+a link to the first matching record; hover the link to see the full header.
+
+**Limits.** A browser-like User-Agent proves nothing; scrapers copy real Chrome
+strings, and those IPs stay in Suspected unless other evidence applies.
+Self-declared crawlers whose operators publish IP ranges are checked against
+them (see [Verified crawlers](#verified-crawlers)). Others, such as `360Spider`
+or `AhrefsBot`, are confirmed and exported on their User-Agent alone; a
+genuine crawler may be one you want to allow.
+
+## Verified crawlers
+
+A User-Agent can be copied by anyone, but a completed HTTP request cannot come
+from an IP address the client does not control. These operators publish the
+addresses their crawlers use, so the analyzer checks every IP against them:
+
+| Operator | Published lists | User-Agent tokens checked for impersonation |
+| --- | --- | --- |
+| Google | [common crawlers](https://developers.google.com/static/crawling/ipranges/common-crawlers.json), [special crawlers](https://developers.google.com/static/crawling/ipranges/special-crawlers.json), [user-triggered fetchers](https://developers.google.com/static/crawling/ipranges/user-triggered-fetchers.json), [Google-owned user-triggered fetchers](https://developers.google.com/static/crawling/ipranges/user-triggered-fetchers-google.json) | `Googlebot` (and `-Image`, `-News`, `-Video`), `GoogleOther`, `Google-InspectionTool`, `Storebot-Google`, `AdsBot-Google`, `Mediapartners-Google`, `APIs-Google`, `FeedFetcher-Google`, and others |
+| Microsoft | [bingbot](https://www.bing.com/toolbox/bingbot.json) | `bingbot`, `msnbot`, `BingPreview`, `adidxbot` |
+| OpenAI | [GPTBot](https://openai.com/gptbot.json), [OAI-SearchBot](https://openai.com/searchbot.json), [ChatGPT-User](https://openai.com/chatgpt-user.json) | `GPTBot`, `OAI-SearchBot`, `ChatGPT-User` |
+| Apple | [Applebot](https://search.developer.apple.com/applebot.json) | `Applebot` |
+| Perplexity | [PerplexityBot](https://www.perplexity.ai/perplexitybot.json), [Perplexity-User](https://www.perplexity.ai/perplexity-user.json) | `PerplexityBot`, `Perplexity-User` |
+| DuckDuckGo | [DuckDuckBot](https://duckduckgo.com/duckduckbot.json) | `DuckDuckBot`, `DuckAssistBot` |
+
+- **Inside a published range → Verified crawler.** This holds whatever the
+  User-Agent says, since some fetchers (for example Google's user-triggered
+  fetchers) send browser-like headers. It also takes priority over WordPress
+  probes, risk alerts, and reputation hits. Crawlers follow links to missing
+  pages, and blocking the IP would block the genuine crawler. Those signals
+  are still listed in the reasons. Use robots.txt to limit what it fetches.
+- **Claims one of those crawlers from any other IP → impersonation.** The
+  reasons say so, and the IP is Confirmed bot. A claim for one operator from
+  another operator's range (bingbot from a Google address) is impersonation
+  too, but the IP stays Verified crawler.
+- Verified crawlers are skipped by **Check IP reputation**, which saves quota.
+
+The bot details show the matching prefix with a link to the operator's list,
+and each crawler claim with a link to its first raw record.
+
+**Updating the ranges.** The lists are stored in `app/data/crawler_ranges.json`,
+so assessments never contact the network. Operators change their ranges, so
+refresh the file periodically:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app crawler-ranges
+```
+
+A source that fails to download keeps its previous prefixes. The next page load
+uses the new file; no restart or reimport is needed.
+
+**Limits.** A crawler that publishes no ranges (360Spider, AhrefsBot, Yandex,
+Baidu) cannot be verified this way. Google and Microsoft also document
+verification by reverse DNS, which this analyzer does not perform. Behind a
+proxy or CDN, the logged IP is the proxy's address, so verification only works
+when Apache logs the original client IP.
+
+The ai.robots.txt list is vendored in `app/data/ai_robots.json` under its MIT
+license (`app/data/ai_robots.LICENSE`). To update it, replace the file with
+the upstream `robots.json`; no reimport is needed.
+
+## Open-proxy probes
+
+A browser asks an origin server for a path, such as `GET /page HTTP/1.1`. The
+absolute form, `GET https://other-host/ HTTP/1.1`, is only meant for a forward
+proxy. When this server, which is not a proxy, receives an absolute URL for a
+host that is not the selected site, the client is testing it as an open relay.
+
+- **Absolute URL for another host → Confirmed bot.** This applies to any method
+  and any response status; one request is enough. The reasons name the other
+  host. It overrides CSS evidence, like the other confirming signals. A request
+  for the site's own host in absolute form is allowed and is not flagged.
+- The comparison between the request's host and the selected site is why the
+  check is per domain: an absolute URL for one site's host is a probe when it
+  arrives in the other site's logs.
+
+This is a precise signal with few false positives, but it is also rare, so most
+log sets contain none. It added no confirmed bots on the current Chronoscrate
+data; it is there to catch the probes when they appear.
+
 ## Apache logging
 
 Standard common/combined logs already support CSS path detection; no extra
@@ -131,8 +277,8 @@ history. No reimport or schema change is needed for this view.
 ## APIs
 
 `GET /api/bots` accepts `domain_id`, `source_ip`, `start`, `end`, `classification`, `limit`,
-`offset`, and `order`. Categories are `confirmed_bot`, `suspected_bot`, and
-`not_a_bot`. Validation and UTC formats match other investigation endpoints.
+`offset`, and `order`. Categories are `confirmed_bot`, `suspected_bot`,
+`verified_crawler`, and `not_a_bot`. Validation and UTC formats match other investigation endpoints.
 Categories appear in risk-priority order; `order=desc` (default) or `asc` sorts
 last-seen times within each category.
 
@@ -154,6 +300,27 @@ using the selected `domain_id`, the IP's `source_ip`, `log_type=access`, shared
 the text attachment. No confirmed IPs produces an empty file. Both endpoints
 are read only, use a consistent database snapshot, and require initialization.
 They scan matching history; memory grows with IP count rather than request count.
+
+`POST /api/bots/threat-intel` accepts the same filters plus `refresh=true` and
+requires an empty JSON body (`{}` with `Content-Type: application/json`), so
+other websites cannot trigger lookups. It checks one batch and returns
+`processed`, `remaining`, `can_continue`, per-provider `checked`/`errors`, and
+key status (`keys_rate_limited`, `keys_rejected`, `stopped`). It returns 409
+`threat_intel_not_configured` when no keys are set. Bot items include
+`threat_intel` (cached results with score, threshold, and `malicious`) and
+`threat_intel_hits`; the summary adds `threat_intel_confirmed` and `threat_intel_checked`.
+Items also include `declared_agent_count` and `declared_agents` (category,
+label, name, reason, raw `user_agent`, first `event_id`, and `requests`); the
+summary adds `declared_agent_confirmed`, and `policy` adds `user_agent_policy`.
+Items also include `verified_crawler` (operator, crawler, prefix, `source_url`,
+and the list's `creation_time`, or null), `crawler_claims` (operator, token, raw
+`user_agent`, first `event_id`, `requests`, `verifiable`, and `impersonation`),
+and `impersonation`. The summary adds `impersonation_confirmed` and
+`crawler_ranges_updated`, and `policy` adds `crawler_policy`. Verified crawlers
+use the recommendation `allow_or_use_robots_txt`.
+Items also include `foreign_host_count` and `foreign_hosts` (each with `host`,
+first `event_id`, and `requests`); the summary adds `foreign_host_confirmed`,
+and `policy` adds `foreign_host_policy`.
 
 ```powershell
 Invoke-RestMethod 'http://127.0.0.1:5000/api/bots?classification=confirmed_bot&limit=25'

@@ -6,18 +6,24 @@ from datetime import tzinfo
 from pathlib import Path
 
 import click
-from flask import Flask
+from flask import Flask, current_app
 from flask.cli import with_appcontext
 
 from app.alerts import ALERT_STATUSES, AlertStatus
-from app.database import get_database
-from app.domains import DEFAULT_DOMAIN, DOMAIN_IDS
+from app.bots import REPUTATION_SETTLED, assess_bots
+from app.database import domain_database_path, get_database
+from app.domains import DEFAULT_DOMAIN, DOMAINS, DOMAIN_IDS
 from app.events import ApacheLogType
 from app.ingestion import (
     DEFAULT_MAX_DECOMPRESSED_BYTES, DEFAULT_MAX_LINE_BYTES, MAX_LINE_BYTES, parse_error_timezone,
 )
 from app.pipeline import DetectionSummary, analyze_file, detect_events
 from app.storage import SQLiteStore
+from app.threat_intel import (
+    DEFAULT_KEYS_PATH, PROVIDER_LABELS, PROVIDERS, ThreatIntelConfigError, cache_path_for, check_ips,
+    eligible_ip, load_keys, read_reputation,
+)
+from app.verified_crawlers import update_ranges
 
 
 def _timezone_option(context, parameter, value):
@@ -131,7 +137,79 @@ def alert_status_command(alert_id: int, status: AlertStatus, domain_id: str) -> 
     click.echo(f"Alert {stored.id} status: {stored.alert.status}")
 
 
+@click.command("threat-intel")
+@click.option("--domain", "domain_id", type=click.Choice(DOMAIN_IDS), help="Check only this site; default is both.")
+@click.option("--refresh", is_flag=True, help="Re-check IPs that already have cached results.")
+@click.option("--limit", type=click.IntRange(1), help="Maximum number of IPs to look up in this run.")
+@click.option("--json", "json_output", is_flag=True, help="Print the lookup summary as JSON.")
+@with_appcontext
+def threat_intel_command(domain_id: str | None, refresh: bool, limit: int | None, json_output: bool) -> None:
+    """Check unconfirmed public IPs against AbuseIPDB and AlienVault OTX."""
+    try:
+        keys = load_keys(current_app.config.get("THREAT_INTEL_KEYS_PATH", DEFAULT_KEYS_PATH))
+    except ThreatIntelConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not any(keys.values()):
+        raise click.ClickException("No API keys are configured. Add them to threat_intel_keys.toml.")
+    try:
+        cache_path = cache_path_for(domain_database_path(DEFAULT_DOMAIN))
+        reputation = read_reputation(cache_path)
+        addresses = []
+        for domain in DOMAINS:
+            if domain_id is None or domain.id == domain_id:
+                items, _ = assess_bots(
+                    SQLiteStore(get_database(domain.id)), hostname=domain.hostname, reputation=reputation,
+                )
+                addresses += [
+                    item["source_ip"] for item in items
+                    if item["classification"] not in REPUTATION_SETTLED and eligible_ip(item["source_ip"])
+                ]
+        result = check_ips(addresses, keys=keys, cache_path=cache_path, refresh=refresh, limit=limit)
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    click.echo(
+        f"Public unconfirmed IPs: {result['public_ips']}; needing lookup: {result['needing_lookup']}; "
+        f"looked up: {result['processed']}; remaining: {result['remaining']}"
+    )
+    for provider in PROVIDERS:
+        info = result["providers"][provider]
+        line = (
+            f"{PROVIDER_LABELS[provider]}: checked={result['checked'][provider]}, errors={result['errors'][provider]}, "
+            f"keys={info['keys_configured']}, rate-limited={info['keys_rate_limited']}, rejected={info['keys_rejected']}"
+        )
+        if info["stopped"]:
+            line += f" (stopped: {info['stopped'].replace('_', ' ')})"
+        click.echo(line)
+
+
+@click.command("crawler-ranges")
+@click.option("--json", "json_output", is_flag=True, help="Print the update summary as JSON.")
+def crawler_ranges_command(json_output: bool) -> None:
+    """Download the IP ranges that crawler operators publish into app/data/crawler_ranges.json."""
+    try:
+        result = update_ranges()
+    except OSError as exc:
+        raise click.ClickException(f"Could not write the crawler ranges file: {exc}") from exc
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+    else:
+        for source in result["sources"]:
+            if source["ok"]:
+                click.echo(f"{source['source']}: {source['prefixes']} prefixes (list dated {source['creation_time']})")
+            else:
+                kept = "kept previous prefixes" if source["kept_previous"] else "no previous prefixes"
+                click.echo(f"{source['source']}: FAILED ({source['error']}); {kept}")
+        click.echo(f"Wrote {result['path']}. Assessments use it on the next page load; no restart needed.")
+    if not any(source["ok"] for source in result["sources"]):
+        raise click.ClickException("Every download failed. Check the network connection and try again.")
+
+
 def init_app(app: Flask) -> None:
     app.cli.add_command(ingest_command)
     app.cli.add_command(detect_command)
     app.cli.add_command(alert_status_command)
+    app.cli.add_command(threat_intel_command)
+    app.cli.add_command(crawler_ranges_command)

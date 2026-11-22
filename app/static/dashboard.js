@@ -6,9 +6,12 @@
   const statusLabels = {
     new: "New", investigating: "Investigating", resolved: "Resolved", false_positive: "False positive",
   };
-  const botLabels = { confirmed_bot: "Confirmed bot", suspected_bot: "Suspected bot", not_a_bot: "Not a bot" };
+  const botLabels = {
+    confirmed_bot: "Confirmed bot", suspected_bot: "Suspected bot", verified_crawler: "Verified crawler", not_a_bot: "Not a bot",
+  };
   const recommendations = {
     review_for_block: "Review for blocking", monitor_or_challenge: "Monitor or challenge", allow_and_monitor: "Allow and monitor",
+    allow_or_use_robots_txt: "Allow; limit with robots.txt",
   };
   const titles = {
     overview: ["Overview", "Import your logs. Follow the evidence."],
@@ -56,6 +59,7 @@
     else url.searchParams.set("domain_id", domainId);
     if (url.hash.startsWith("#alerts/")) url.hash = "#alerts";
     history.replaceState(null, "", url);
+    message("reputation-message", "");
     $("bot-site").textContent = $("active-domain").selectedOptions[0].dataset.hostname;
     $("domain-caption").textContent = "Events, alerts, assessments, and exports are scoped to this website.";
   }
@@ -206,7 +210,44 @@
       ["Observed languages", item.languages.join(", ") || "Not observed"],
       ["Risk alerts", item.risk_alert_count],
       ["WordPress probes", item.wordpress_probe_count],
+      ["Open-proxy probes", item.foreign_host_count],
+      ["Threat intelligence hits", item.threat_intel_hits],
+      ["Requests with an automated User-Agent", item.declared_agent_count],
+      ["Published crawler range", item.verified_crawler
+        ? item.verified_crawler.operator + " " + item.verified_crawler.crawler + " · " + item.verified_crawler.prefix
+        : "Not in any published range"],
     ]);
+    const crawlerEvidence = [];
+    if (item.verified_crawler) {
+      const link = element("a", item.verified_crawler.operator + " publishes " + item.verified_crawler.prefix +
+        " for " + item.verified_crawler.crawler + " (list dated " +
+        (item.verified_crawler.creation_time || "unknown").slice(0, 10) + ")");
+      link.href = item.verified_crawler.source_url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const line = element("p");
+      line.append(link);
+      crawlerEvidence.push(line);
+    }
+    for (const claim of item.crawler_claims) {
+      const button = element("button", (claim.impersonation ? "Impersonation: claims " : "Claims ") + claim.token +
+        " (" + claim.operator + ") · " + claim.requests + " request(s) · Event #" + claim.event_id, "text-button");
+      button.type = "button";
+      button.title = claim.user_agent;
+      button.addEventListener("click", () => openEvent(claim.event_id));
+      crawlerEvidence.push(button);
+    }
+    $("bot-crawler-evidence").replaceChildren(...(crawlerEvidence.length ? crawlerEvidence
+      : [element("p", "Not in a published crawler range, and no User-Agent claims a verifiable crawler.", "muted")]));
+    $("bot-user-agent-evidence").replaceChildren(...(item.declared_agents.length
+      ? item.declared_agents.map((agent) => {
+        const button = element("button", agent.label + ": " + agent.name + " · " + agent.requests +
+          " request(s) · Event #" + agent.event_id, "text-button");
+        button.type = "button";
+        button.title = agent.user_agent || "No User-Agent";
+        button.addEventListener("click", () => openEvent(agent.event_id));
+        return button;
+      }) : [element("p", "No declared crawler, scanner, or HTTP-library User-Agent in this selection.", "muted")]));
     $("bot-reasons").replaceChildren(...item.reasons.map((reason) => element("li", reason)));
     $("bot-wordpress-evidence").replaceChildren(...(item.wordpress_probe_evidence.length
       ? item.wordpress_probe_evidence.map((proof) => {
@@ -232,6 +273,13 @@
         button.addEventListener("click", () => openEvent(proof.event_id));
         return button;
       }) : [element("p", "No successful CSS requests in this selection.", "muted")]));
+    $("bot-threat-intel").replaceChildren(...(item.threat_intel.length
+      ? item.threat_intel.map((result) => element("p",
+        result.label + ": " + (result.provider === "abuseipdb" ? "abuse confidence " + result.score + "/100"
+          : "reputation " + result.score) + " · threshold " + result.threshold + " · " +
+        (result.malicious ? "malicious" : "clean") + " · checked " + time(result.checked_at),
+        result.malicious ? null : "muted"))
+      : [element("p", "Not checked yet. Select Check IP reputation on the Bot traffic page.", "muted")]));
     if (!$("bot-dialog").open) $("bot-dialog").showModal();
     loadBotRequests();
   }
@@ -270,7 +318,14 @@
   function botRows(items, summary) {
     $("bot-confirmed").textContent = summary.by_classification.confirmed_bot.toLocaleString();
     $("bot-suspected").textContent = summary.by_classification.suspected_bot.toLocaleString();
+    $("bot-verified").textContent = summary.by_classification.verified_crawler.toLocaleString();
     $("bot-normal").textContent = summary.by_classification.not_a_bot.toLocaleString();
+    const flagged = [];
+    if (summary.declared_agent_confirmed) flagged.push(summary.declared_agent_confirmed.toLocaleString() + " by User-Agent");
+    if (summary.impersonation_confirmed) flagged.push(summary.impersonation_confirmed.toLocaleString() + " impersonating crawlers");
+    if (summary.foreign_host_confirmed) flagged.push(summary.foreign_host_confirmed.toLocaleString() + " open-proxy probes");
+    if (summary.threat_intel_confirmed) flagged.push(summary.threat_intel_confirmed.toLocaleString() + " by threat intel");
+    $("bot-confirmed-detail").textContent = "Review for blocking" + (flagged.length ? " · " + flagged.join(", ") : "");
     $("bot-scope").textContent = summary.total + " IPs assessed. " + summary.unattributed_requests +
       " access requests lack a usable IP. Counts cover the shared IP/date filters.";
     $("export-bots").disabled = summary.ban_candidates === 0;
@@ -412,7 +467,8 @@
           row.append(site, element("td", item.access_requests.toLocaleString()),
             element("td", item.alerts.total.toLocaleString()),
             element("td", item.alerts_per_1000_requests ?? "—"),
-            element("td", [categories.confirmed_bot, categories.suspected_bot, categories.not_a_bot].join(" / ")),
+            element("td", [categories.confirmed_bot, categories.suspected_bot, categories.verified_crawler,
+              categories.not_a_bot].join(" / ")),
             element("td", item.confirmed_bot_ip_percent ?? "—"));
           return row;
         }));
@@ -441,7 +497,7 @@
     } else {
       $(view === "alerts" ? "alert-pagination" : view === "bots" ? "bot-pagination" : "event-pagination").replaceChildren();
       if (view === "bots") {
-        for (const id of ["bot-confirmed", "bot-suspected", "bot-normal"]) $(id).textContent = "—";
+        for (const id of ["bot-confirmed", "bot-suspected", "bot-verified", "bot-normal"]) $(id).textContent = "—";
         $("export-bots").disabled = true;
         $("bot-scope").textContent = "Loading assessments…";
       }
@@ -782,6 +838,39 @@
       message("page-message", error.message);
     } finally {
       $("export-bots").disabled = $("bot-confirmed").textContent === "0";
+    }
+  });
+
+  let reputationRunning = false;
+  $("check-reputation").addEventListener("click", async () => {
+    if (reputationRunning) return;
+    reputationRunning = true;
+    $("check-reputation").disabled = true;
+    const domainId = state.domain_id, filters = { ...state.common };
+    let looked = 0, result;
+    message("reputation-message", "Checking IPs against AbuseIPDB and AlienVault OTX…", "pending");
+    try {
+      // Each request handles one bounded batch; keep going while work and keys remain.
+      do {
+        result = await api("bots/threat-intel?" + query(filters), {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+        });
+        if (state.domain_id !== domainId) return;
+        looked += result.processed;
+        message("reputation-message", "Looked up " + looked + " IPs · " + result.remaining + " remaining…", "pending");
+        await refresh();
+      } while (result.can_continue && result.processed > 0);
+      const stopped = Object.values(result.providers).filter((provider) => provider.stopped && provider.stopped !== "no_keys")
+        .map((provider) => provider.label + " stopped (" + provider.stopped.replaceAll("_", " ") + ")");
+      const errors = Object.values(result.errors).reduce((total, count) => total + count, 0);
+      message("reputation-message", "Reputation check finished: " + looked + " IPs looked up, " +
+        result.remaining + " remaining." + (errors ? " " + errors + " lookups failed and will be retried next time." : "") +
+        (stopped.length ? " " + stopped.join("; ") + "." : ""), result.remaining || errors ? "pending" : "");
+    } catch (error) {
+      message("reputation-message", error.message);
+    } finally {
+      reputationRunning = false;
+      $("check-reputation").disabled = false;
     }
   });
 
